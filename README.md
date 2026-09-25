@@ -196,7 +196,7 @@ npm run build
 Статусы: `DONE` — реализовано и проверено; `PARTIAL` — реализовано частично; `FAILED` — работает неправильно; `NOT STARTED` — не
 реализовано; `BLOCKED` — нужен недоступный сервис, секрет или доступ. Проверки выполнены на этой машине (Windows, Node 24,
 PostgreSQL 17 в Docker): `npm test` в трёх часовых поясах (UTC, `Pacific/Kiritimati`, `Pacific/Pago_Pago`), `npm run lint`,
-`npm run typecheck`, `npm run build`, сборка и запуск Docker Compose.
+`npm run typecheck`, `npm run build`, сборка и запуск Docker Compose; те же шаги в GitHub Actions (CI #2, коммит `77c910f`).
 
 | Критерий | Статус | Что реализовано | Как проверить | Что не удалось |
 |---|---|---|---|---|
@@ -224,8 +224,8 @@ PostgreSQL 17 в Docker): `npm test` в трёх часовых поясах (UT
 | 22. Production-сборка и Docker работают | DONE | `npm run build`; образ 270 MB, сервисы `db`, `migrate`, `web`, `worker`, `mailpit` | `npm run build`; `docker compose --profile app up --build -d`; `docker compose ps` (все healthy); `curl http://localhost:3000/api/health` | — |
 | 23. Проведена проверка безопасности | DONE | Аудит доступа, ввода, секретов и зависимостей; исправления: лимит попыток входа, общие 500, заголовки, отказ от примерных секретов | `npm audit --omit=dev` (0 уязвимостей); `npx vitest run tests/security-hardening.test.ts tests/api-auth.test.ts`; сканирование gitleaks (0 находок) | 4 moderate-уязвимости в dev-инструментах (`drizzle-kit`, только dev-сервер `esbuild`), в образ не попадают; лимит входа хранится в памяти процесса; один workspace без владельцев кампаний |
 | 24. `received-emails` и тестовые `.eml` не попадают в Git | DONE | `/received-emails/` и `*.eml` в `.gitignore`, `.dockerignore` | `git ls-files \| grep -E "received-emails\|\.eml$"` (пусто); `git check-ignore -v received-emails` | — |
-| 25. GitHub Actions проходят | BLOCKED | Workflows `.github/workflows/ci.yml` и `publish-image.yml` написаны; те же шаги (lint, types, tests, build, audit, Docker) выполнены локально | После пуша: вкладка Actions репозитория | Запуск не выполнялся: нет права записи в репозиторий (см. п. 26) |
-| 26. Изменения опубликованы в GitHub либо указан блокер | BLOCKED | Коммиты готовы локально | `git log origin/main..HEAD --oneline`, затем `git push origin main` | Сохранённые на машине учётные данные Git принадлежат аккаунту `yshu17`, у которого нет прав записи в `ievgiienko/ai-email-broadcast` (ответ 403) |
+| 25. GitHub Actions проходят | DONE | `.github/workflows/ci.yml`: lint, типы, 1638 тестов на Postgres-сервисе, build, проверка отсутствия dev-панели, `npm audit --omit=dev`, gitleaks, сборка Docker-образа; `publish-image.yml` публикует образ после зелёного CI | Вкладка Actions репозитория `yshu17/ai-email-broadcast-HW`: запуск CI #2 (коммит `77c910f`) — все три задачи успешны; Publish image #2 — успешно | Первый запуск (CI #1) упал на шаге gitleaks из-за ошибки самого `gitleaks-action` на первом пуше нового репозитория (утечек не найдено); заменён на прямой запуск gitleaks CLI |
+| 26. Изменения опубликованы в GitHub либо указан блокер | DONE | Код в https://github.com/yshu17/ai-email-broadcast-HW (ветка `main`, вся история исходного проекта плюс доработки); образ `ghcr.io/yshu17/ai-email-broadcast-hw:latest` | `git ls-remote https://github.com/yshu17/ai-email-broadcast-HW main`; `docker pull ghcr.io/yshu17/ai-email-broadcast-hw:latest` (после входа в ghcr.io: репозиторий и пакет приватные) | В исходный репозиторий `ievgiienko/ai-email-broadcast` не отправлено: у аккаунта `yshu17` нет прав записи; доработки опубликованы в собственном репозитории |
 
 ## Известные ограничения и нереализованные пункты
 
@@ -236,7 +236,8 @@ PostgreSQL 17 в Docker): `npm test` в трёх часовых поясах (UT
 - Лимит попыток входа хранится в памяти одного процесса.
 - Список кампаний загружается целиком; время запроса растёт с числом получателей (~100 мс на 375 тыс. записей).
 - Нет форматтера кода, поэтому CI не проверяет форматирование.
-- GitHub Actions не запускались; публикация образа в GHCR не выполнена (критерии 25 и 26).
+- Репозиторий `yshu17/ai-email-broadcast-HW` и образ в GHCR приватные: для просмотра нужен доступ (Settings → Collaborators) или смена видимости на Public.
+- Изменения не отправлены в исходный репозиторий `ievgiienko/ai-email-broadcast` (нет прав записи); его владелец может забрать их из `yshu17/ai-email-broadcast-HW`.
 - `npm audit` (полное дерево) показывает 4 moderate в dev-инструментах, см. [Known advisory](#known-advisory).
 
 ```text
@@ -245,8 +246,8 @@ PostgreSQL 17 в Docker): `npm test` в трёх часовых поясах (UT
 Проект в целом: NOT READY
 ```
 
-Основная задача не `READY`: критерий 2 — `PARTIAL`, критерии 25–26 — `BLOCKED`. Дополнительное задание не `READY`: критерий 15
-реализован строже формулировки (`PARTIAL`), критерий 21 `DONE`.
+Основная задача не `READY`: критерий 2 — `PARTIAL` (часовой пояс берётся из браузера, отдельного выбора зоны нет). Дополнительное
+задание не `READY`: критерий 15 реализован строже формулировки (`PARTIAL`). Остальные 24 критерия — `DONE`.
 
 ---
 
