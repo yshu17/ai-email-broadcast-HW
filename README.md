@@ -10,7 +10,256 @@ It is provider-agnostic — SendPulse is just a set of SMTP settings.
 
 ---
 
+## Домашнее задание
+
+К менеджеру email-рассылок добавить **запланированную отправку**: при создании кампании выбрать «отправить сейчас» или «запланировать»
+(дата, время, часовой пояс), хранить время в UTC, запускать кампанию автоматически через уже существующую очередь и
+SMTP rate limiter, разрешить отмену до постановки в очередь, пережить перезапуск и никогда не запускать кампанию дважды.
+
+**Дополнительное задание:** перенос времени уже запланированной кампании (пока она `SCHEDULED`) и dev-панель для ручного
+тестирования планирования (тестовое время, планировщик, очередь, rate limiter, подсказки `?`, обучающий тур).
+
+## Реализованные возможности
+
+- Шаг «Отправка» мастера кампании: **Отправить сейчас** или **Запланировать** (дата, время; часовой пояс браузера показан рядом).
+- Проверка времени в браузере и на сервере (часы сервера); прошедшее и неоднозначное/несуществующее время отклоняется.
+- Статус `SCHEDULED`; `campaigns.scheduled_at` — `timestamptz`, то есть момент в UTC.
+- Автоматический запуск: тик worker находит `SCHEDULED` с `scheduled_at <= now()` и ставит их в очередь.
+- Отправка идёт через существующую очередь, лимит `SMTP_MAX_EMAILS_PER_HOUR`, повторы и защиту от дублей.
+- Отмена (`POST /api/campaigns/:id/cancel-scheduled`) и перенос (`PATCH /api/campaigns/:id/schedule`) только пока статус `SCHEDULED`.
+- Расписание хранится в PostgreSQL, поэтому переживает перезапуск; пропущенная кампания запускается на первом тике после подъёма.
+- Интерфейс на русском и английском, dev-панель (только development/test), Docker Compose, health check, CI.
+
+## Архитектура планирования рассылок
+
+```text
+мастер кампании ──POST /api/campaigns/:id/schedule──▶ campaigns.status = SCHEDULED, scheduled_at (UTC)
+                                                              │
+worker (сервис worker / npm run worker / cron) ──POST /api/worker/tick──▶ тик:
+   1. activateDueCampaigns: SCHEDULED и scheduled_at <= now() ──▶ QUEUED + строки campaign_recipients (одна транзакция)
+   2. очередь: claim строк в пределах лимита ──▶ SMTP ──▶ SENT / повтор / FAILED
+   3. finalizeCompletedCampaigns: нет QUEUED/SENDING ──▶ COMPLETED
+```
+
+Отдельного процесса-планировщика нет: **тик worker и есть планировщик**. Код: `src/lib/campaign-activation.ts`
+(запуск, отмена, перенос), `src/lib/scheduling.ts` (разбор и проверка времени), `src/lib/campaign-send.ts`
+(сервисы отправки и планирования), `src/lib/worker.ts` и `src/lib/queue.ts` (очередь), `src/lib/rate-limit.ts`.
+
+## Жизненный цикл кампании
+
+```text
+DRAFT → SCHEDULED → QUEUED → SENDING → COMPLETED
+                  ↘ CANCELLED
+```
+
+`DRAFT → QUEUED` — немедленная отправка. `QUEUED`, `SENDING` можно приостановить (`PAUSED`) или остановить
+(`CANCELLED`) обычной отменой. Отмена запланированной и перенос возможны только из `SCHEDULED`. Если к моменту запуска
+получателей не осталось, кампания становится `CANCELLED`.
+
+## Как хранятся дата, время и часовой пояс
+
+- В базе один момент времени `scheduled_at timestamptz` (UTC). Часовой пояс не хранится.
+- API принимает и отдаёт ISO 8601 с указанием зоны (`2026-10-15T08:30:00.000Z` или `+02:00`); значение без зоны отклоняется.
+- Мастер переводит введённые дату и время в UTC по **часовому поясу браузера** (он показан рядом с полями). Если локальное
+  время бывает дважды (перевод часов назад), мастер просит выбрать; несуществующее время (перевод вперёд) отклоняется.
+- Сервер сравнивает только моменты по своим часам. Подробности: [Time zones](#time-zones).
+
+## Как работает автоматический запуск
+
+Тик worker (`POST /api/worker/tick`, секрет `WORKER_SECRET`) первым делом ищет `SCHEDULED` кампании, время которых
+наступило, и для каждой в одной транзакции блокирует строку (`FOR UPDATE SKIP LOCKED`), ставит `QUEUED` и создаёт
+строки получателей. Тик вызывает сервис `worker` (или `npm run worker`, или внешний cron) каждые
+`WORKER_TICK_INTERVAL_SECONDS` (по умолчанию 60 с), поэтому кампания стартует в пределах одного интервала после своего
+времени. Подробности: [Scheduled campaigns](#scheduled-campaigns), [Running the scheduler](#running-the-scheduler).
+
+## Как используются очередь и rate limiter
+
+Запланированная кампания не обходит очередь: после `QUEUED` работает тот же путь, что и при немедленной отправке.
+Запланированное время — это **начало** отправки; большая кампания всё равно уходит со скоростью
+`SMTP_MAX_EMAILS_PER_HOUR` (× `SMTP_RATE_SAFETY_FACTOR`). Счёт отправок ведётся в Postgres (`smtp_send_log`), поэтому лимит
+не сбрасывается при перезапуске. Подробности: [How the sending queue and rate limit work](#how-the-sending-queue-and-rate-limit-work).
+
+## Как предотвращаются повторный запуск и гонки
+
+- Запуск, отмена и перенос — условные записи по `status = 'SCHEDULED'` одной строки кампании; выигрывает ровно одна.
+- Несколько worker одновременно: строку получает один (`SKIP LOCKED`), остальные её пропускают.
+- Если транзакция запуска упала, кампания остаётся `SCHEDULED` без частичной очереди и повторяется на следующем тике.
+- Один адрес на кампанию: уникальный индекс `(campaign_id, email_normalized)`; отправленное письмо не отправляется повторно.
+
+## Как работают отмена и перенос времени
+
+- **Отмена**: `POST /api/campaigns/:id/cancel-scheduled` → `CANCELLED`; `409`, если кампания уже не `SCHEDULED`.
+- **Перенос**: `PATCH /api/campaigns/:id/schedule` с новым будущим временем; `409`, если статус другой **или время уже
+  наступило и планировщик вправе запустить кампанию**. В UI это кнопки «Изменить время» и «Отменить» в списке и на странице
+  кампании. Перенос — одна запись `UPDATE … WHERE status='SCHEDULED' AND scheduled_at > now()`, поэтому гонка с worker
+  решается атомарно; в старое время кампания не стартует.
+- Подробности и таблицы ответов: [Seeing and cancelling scheduled campaigns](#seeing-and-cancelling-scheduled-campaigns),
+  [Changing the time of a scheduled campaign](#changing-the-time-of-a-scheduled-campaign).
+
+## Как система восстанавливается после перезапуска
+
+Ни расписание, ни очередь не живут в памяти процесса. После остановки и запуска (`docker compose down` / `up`, падение
+worker или web) кампания, чьё время прошло, запускается на первом тике; перенесённое и ещё будущее время остаётся в базе.
+Подробности: [Restarts and missed start times](#restarts-and-missed-start-times).
+
+## Как включить и использовать dev-панель
+
+Только в development/test и только при `ENABLE_EMAIL_TEST_PANEL=true` в `.env`; после этого перезапустить `npm run dev`.
+Справа внизу появится кнопка **Тестовая панель**: тестовое время (Задать / Продвинуть на 1 мин, 5 мин, 1 ч, 1 день),
+планировщик (Старт, Стоп, «Запустить сейчас» — ровно один цикл), очередь и rate limit, создание тестовых кампаний,
+журнал событий, тур «Как протестировать планирование» и 9 сценариев. Все письма при этом идут на встроенный тестовый SMTP
+(`@test.invalid`, файлы `.eml` в `received-emails/`). В production панели нет: её маршруты не собираются, код не входит в
+сборку. Подробности: [Developer test panel](#developer-test-panel).
+
+## Локальный запуск
+
+**Требования:** Node.js 22+, npm, Docker (для PostgreSQL) и SMTP-аккаунт (для реальной отправки; для проверки хватит dev-панели
+или Mailpit).
+
+**Настройка `.env`:** `cp .env.example .env`, затем задать `ENCRYPTION_KEY` и `WORKER_SECRET` (`openssl rand -hex 32` для
+каждого); остальное по умолчанию подходит для локальной работы. `.env` не попадает в Git.
+
+**Обычный запуск:**
+
+```bash
+npm install
+cp .env.example .env
+docker compose up -d db                 # PostgreSQL на 127.0.0.1:5435
+npm run db:migrate                      # миграции
+npm run create-admin -- you@example.com 'a-long-password'
+npm run dev                             # frontend и backend (Next.js) на http://localhost:3000
+npm run worker                          # во втором терминале: worker и планировщик (тик каждую минуту)
+```
+
+**Docker Compose (всё сразу):**
+
+```bash
+docker compose --profile app up --build -d          # migrate, web, worker
+docker compose exec web node dist-scripts/create-admin.cjs you@example.com 'a-long-password'
+docker compose --profile app --profile smtp-test up --build -d   # то же плюс Mailpit на http://localhost:8025
+```
+
+| Процесс | Обычный запуск | Docker Compose |
+| --- | --- | --- |
+| Миграции | `npm run db:migrate` | сервис `migrate` (один раз) |
+| Frontend и backend | `npm run dev` / `npm run build && npm start` | сервис `web` |
+| Worker и scheduler (один процесс) | `npm run worker` | сервис `worker` |
+
+**Проверки и сборка:**
+
+```bash
+npm run lint
+npm run typecheck
+npm test            # нужен PostgreSQL: docker compose up -d db
+npm run build
+```
+
+## Пошаговая инструкция ручной проверки задания
+
+Быстрый путь с dev-панелью (не нужно ждать): в `.env` `ENABLE_EMAIL_TEST_PANEL=true`, запустить `npm run dev`, войти, открыть
+**Тестовая панель**. Панель сама запускает планировщик и тестовый SMTP, `npm run worker` не нужен.
+
+1. **Запланированная кампания вручную.** Рассылки → Новая рассылка → название → тема и текст → выбрать список получателей →
+   шаг «Отправка» → **Запланировать** → дата и время через 2–3 минуты → «Запланировать рассылку». Проверить: статус
+   «Запланирована», в списке видно время и `≈ N` получателей. Прошедшее время должно быть отклонено.
+2. **Автозапуск.** Подождать время (при `npm run worker` — до минуты). Статус: `QUEUED` → `SENDING` → `COMPLETED`; получатели
+   появляются на странице кампании.
+3. **Через dev-панель.** «Создать тестовую кампанию» → шаблон «Запуск через 5 мин» → Создать; «Тестовое время» → Фиксированное →
+   Задать; шаг «5 минут» → Продвинуть; «Планировщик» → Запустить сейчас. Проверить статусы в разделе «Тестовые кампании».
+4. **Отмена.** Создать ещё одну запланированную кампанию → «Отменить» → подтвердить → `CANCELLED`; «Запустить сейчас»
+   ничего не запускает.
+5. **Перенос.** Создать запланированную → «Изменить время» → новое будущее время → в списке новое время; повторный
+   перенос кампании, которая уже `QUEUED`, отклоняется (409).
+6. **Перезапуск.** Запланировать кампанию на 5 минут вперёд, остановить приложение и worker (`Ctrl+C`, либо `docker compose stop
+   web worker`), подождать, пока время пройдёт, запустить снова: кампания стартует на первом тике. Будущее расписание после
+   перезапуска остаётся.
+
+Сценарий для преподавателя, коротко:
+
+```text
+1. Запустить проект.
+2. Создать кампанию.
+3. Выбрать «Запланировать».
+4. Указать будущее время.
+5. Убедиться, что статус стал SCHEDULED.
+6. Дождаться времени или использовать dev-панель.
+7. Проверить переход в QUEUED, SENDING и COMPLETED.
+8. Проверить отмену.
+9. Проверить изменение времени.
+10. Перезапустить приложение и проверить восстановление расписания.
+```
+
+Автоматически те же сценарии проверяют тесты (см. колонку «Как проверить»): `npm test` — 58 файлов, 1638 тестов на реальном PostgreSQL.
+
+## Таблица готовности
+
+Статусы: `DONE` — реализовано и проверено; `PARTIAL` — реализовано частично; `FAILED` — работает неправильно; `NOT STARTED` — не
+реализовано; `BLOCKED` — нужен недоступный сервис, секрет или доступ. Проверки выполнены на этой машине (Windows, Node 24,
+PostgreSQL 17 в Docker): `npm test` в трёх часовых поясах (UTC, `Pacific/Kiritimati`, `Pacific/Pago_Pago`), `npm run lint`,
+`npm run typecheck`, `npm run build`, сборка и запуск Docker Compose.
+
+| Критерий | Статус | Что реализовано | Как проверить | Что не удалось |
+|---|---|---|---|---|
+| 1. Выбор между немедленной и запланированной отправкой | DONE | Шаг «Отправка»: «Отправить сейчас» / «Запланировать» | Ручной сценарий, п. 1; `npx vitest run tests/send-step-ui.test.tsx tests/campaign-send.test.ts` | — |
+| 2. Выбор даты, времени и часового пояса | PARTIAL | Дата и время выбираются; зона — часовой пояс браузера, показана рядом с полями, неоднозначное время (перевод часов) выбирается вручную | Ручной сценарий, п. 1; `npx vitest run tests/scheduling.test.ts tests/timezones.test.ts` | В мастере нет выпадающего списка зон: зону нельзя выбрать отдельно от браузера (список зон есть только в dev-панели) |
+| 3. Frontend и backend запрещают прошедшее время | DONE | Проверка в форме (`ScheduleFields`) и на сервере (`parseScheduledAt`, ответ `400` с кодом `SCHEDULE_*`) | Ввести прошедшее время; `npx vitest run tests/scheduling.test.ts tests/campaign-scheduling.test.ts tests/send-step-ui.test.tsx` | — |
+| 4. Кампания получает статус `SCHEDULED` | DONE | `POST /api/campaigns/:id/schedule`; ограничение БД `campaigns_scheduled_requires_time` | Ручной сценарий, п. 1; `npx vitest run tests/campaign-scheduling.test.ts` | — |
+| 5. `scheduledAt` сохраняется в базе в UTC | DONE | Колонка `scheduled_at timestamptz`, API в ISO 8601 с зоной | `npx vitest run tests/timezones.test.ts tests/scheduling-e2e.test.ts` (в трёх часовых поясах) | — |
+| 6. Кампания автоматически запускается в нужное время | DONE | Тик worker: `activateDueCampaigns` → `QUEUED` | Ручной сценарий, п. 2; `npx vitest run tests/scheduled-activation.test.ts tests/scheduling-e2e.test.ts`; проверено в Docker Compose (запуск без участия человека) | — |
+| 7. Используются существующая очередь и SMTP rate limiting | DONE | После `QUEUED` тот же путь, что у немедленной отправки; счётчик лимита в Postgres | `npx vitest run tests/scheduling-e2e.test.ts tests/queue.test.ts tests/testpanel-ratelimit.test.ts`; в Docker при лимите 8/ч и 12 отправленных письмах отправок 0, после повышения лимита — все | — |
+| 8. Кампанию можно отменить до перехода в `QUEUED` | DONE | `POST /api/campaigns/:id/cancel-scheduled`, кнопки в списке и на странице | Ручной сценарий, п. 4; `npx vitest run tests/scheduled-cancel.test.ts tests/campaign-list-ui.test.tsx` | — |
+| 9. Отменённая кампания не запускается | DONE | Запуск и отмена — условные записи по `status='SCHEDULED'` | `npx vitest run tests/scheduled-cancel.test.ts`; в Docker отменённая кампания осталась без получателей | — |
+| 10. Расписание сохраняется после перезапуска | DONE | Расписание только в PostgreSQL | Ручной сценарий, п. 6; `npx vitest run tests/scheduler-restart.test.ts tests/scheduler-processes.test.ts`; Docker: `down` и `up` без `-v` | — |
+| 11. Пропущенная во время простоя кампания запускается после восстановления | DONE | Тик находит всё, что стало due, «как бы поздно ни было» | `npx vitest run tests/scheduler-recovery.test.ts tests/scheduler-restart.test.ts`; Docker: остановка `web` и `worker`, ожидание, запуск — кампания стартовала | — |
+| 12. Кампания не запускается дважды | DONE | `FOR UPDATE SKIP LOCKED`, условный `UPDATE`, уникальный `(campaign_id, email_normalized)` | `npx vitest run tests/scheduler-processes.test.ts tests/scheduled-activation.test.ts` (несколько реальных процессов); Docker: 24 строки на 24 разные пары | — |
+| 13. Немедленная отправка и существующие функции не сломаны | DONE | Весь прежний набор тестов проходит; `sendDraftCampaign` вынесен в сервис без смены поведения | `npm test` (1638 тестов); `npx vitest run tests/campaign-send.test.ts tests/queue.test.ts tests/api-auth.test.ts` | Ручной прогон всех экранов в браузере целиком не выполнялся |
+| 14. Запланированную кампанию можно перенести на новое будущее время | DONE | `PATCH /api/campaigns/:id/schedule`, кнопка «Изменить время» | Ручной сценарий, п. 5; `npx vitest run tests/reschedule.test.ts tests/reschedule-ui.test.tsx` | — |
+| 15. Перенос разрешён, пока статус `SCHEDULED`, даже если прежнее время наступило, но worker ещё не забрал кампанию | PARTIAL | Разрешён для `SCHEDULED` с будущим `scheduled_at`. Если время **уже наступило**, перенос отклоняется (`409`), чтобы устаревшая страница не отбирала кампанию у планировщика | `npx vitest run tests/reschedule.test.ts tests/reschedule-times.test.ts` | Требование в формулировке задания («разрешён, даже если прежнее время наступило») сознательно реализовано строже: см. [Changing the time of a scheduled campaign](#changing-the-time-of-a-scheduled-campaign) |
+| 16. После `QUEUED`, `SENDING`, `COMPLETED` или `CANCELLED` перенос запрещён | DONE | `409` для любого статуса, кроме `SCHEDULED` | `npx vitest run tests/reschedule.test.ts` | — |
+| 17. После переноса кампания не запускается в старое время | DONE | Worker читает `scheduled_at` заново на каждом тике | `npx vitest run tests/reschedule.test.ts tests/reschedule-times.test.ts` | — |
+| 18. Система автоматически использует новое время | DONE | То же чтение `scheduled_at`; никаких таймеров и заданий для замены | Ручной сценарий, п. 5; `npx vitest run tests/reschedule.test.ts` | — |
+| 19. Гонка между переносом и worker обрабатывается атомарно | DONE | Перенос — один `UPDATE … WHERE status='SCHEDULED' AND scheduled_at > now()` | `npx vitest run tests/reschedule.test.ts` (гонки перенос/запуск) | — |
+| 20. Новое время сохраняется после перезапуска | DONE | Хранится в базе | `npx vitest run tests/reschedule.test.ts tests/scheduler-restart.test.ts` | — |
+| 21. Dev-панель, подсказки и обучалка доступны только в development/test | DONE | Флаг + `NODE_ENV`, проверка на сервере, маршруты `route.dev.ts` не собираются в production | `npx vitest run tests/testpanel-access.test.ts`; production: `/api/dev/*` → 404 (проверено в `next start` и Docker), `grep` по `.next` не находит панель | — |
+| 22. Production-сборка и Docker работают | DONE | `npm run build`; образ 270 MB, сервисы `db`, `migrate`, `web`, `worker`, `mailpit` | `npm run build`; `docker compose --profile app up --build -d`; `docker compose ps` (все healthy); `curl http://localhost:3000/api/health` | — |
+| 23. Проведена проверка безопасности | DONE | Аудит доступа, ввода, секретов и зависимостей; исправления: лимит попыток входа, общие 500, заголовки, отказ от примерных секретов | `npm audit --omit=dev` (0 уязвимостей); `npx vitest run tests/security-hardening.test.ts tests/api-auth.test.ts`; сканирование gitleaks (0 находок) | 4 moderate-уязвимости в dev-инструментах (`drizzle-kit`, только dev-сервер `esbuild`), в образ не попадают; лимит входа хранится в памяти процесса; один workspace без владельцев кампаний |
+| 24. `received-emails` и тестовые `.eml` не попадают в Git | DONE | `/received-emails/` и `*.eml` в `.gitignore`, `.dockerignore` | `git ls-files \| grep -E "received-emails\|\.eml$"` (пусто); `git check-ignore -v received-emails` | — |
+| 25. GitHub Actions проходят | BLOCKED | Workflows `.github/workflows/ci.yml` и `publish-image.yml` написаны; те же шаги (lint, types, tests, build, audit, Docker) выполнены локально | После пуша: вкладка Actions репозитория | Запуск не выполнялся: нет права записи в репозиторий (см. п. 26) |
+| 26. Изменения опубликованы в GitHub либо указан блокер | BLOCKED | Коммиты готовы локально | `git log origin/main..HEAD --oneline`, затем `git push origin main` | Сохранённые на машине учётные данные Git принадлежат аккаунту `yshu17`, у которого нет прав записи в `ievgiienko/ai-email-broadcast` (ответ 403) |
+
+## Известные ограничения и нереализованные пункты
+
+- Часовой пояс в мастере — пояс браузера; отдельного выбора зоны нет (критерий 2).
+- Перенос отклоняется, если прежнее время уже наступило (критерий 15): так устаревшая страница не отбирает кампанию у планировщика.
+- Точность запуска — интервал тика worker (по умолчанию 60 с).
+- Один workspace и один тип пользователя (admin): кампании не принадлежат отдельным пользователям.
+- Лимит попыток входа хранится в памяти одного процесса.
+- Список кампаний загружается целиком; время запроса растёт с числом получателей (~100 мс на 375 тыс. записей).
+- Нет форматтера кода, поэтому CI не проверяет форматирование.
+- GitHub Actions не запускались; публикация образа в GHCR не выполнена (критерии 25 и 26).
+- `npm audit` (полное дерево) показывает 4 moderate в dev-инструментах, см. [Known advisory](#known-advisory).
+
+```text
+Основная задача: NOT READY
+Дополнительное задание: NOT READY
+Проект в целом: NOT READY
+```
+
+Основная задача не `READY`: критерий 2 — `PARTIAL`, критерии 25–26 — `BLOCKED`. Дополнительное задание не `READY`: критерий 15
+реализован строже формулировки (`PARTIAL`), критерий 21 `DONE`.
+
+---
+
 ## Contents
+
+- [Домашнее задание](#домашнее-задание)
+- [Реализованные возможности](#реализованные-возможности)
+- [Архитектура планирования рассылок](#архитектура-планирования-рассылок)
+- [Жизненный цикл кампании](#жизненный-цикл-кампании)
+- [Локальный запуск](#локальный-запуск)
+- [Пошаговая инструкция ручной проверки задания](#пошаговая-инструкция-ручной-проверки-задания)
+- [Таблица готовности](#таблица-готовности)
+- [Известные ограничения и нереализованные пункты](#известные-ограничения-и-нереализованные-пункты)
 
 - [Quick start](#quick-start)
 - [Configuring SendPulse SMTP](#configuring-sendpulse-smtp)
