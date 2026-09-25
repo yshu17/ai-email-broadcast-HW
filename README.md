@@ -18,7 +18,12 @@ It is provider-agnostic — SendPulse is just a set of SMTP settings.
 - [Never sending the same email twice](#never-sending-the-same-email-twice)
 - [Open tracking, and what it does not tell you](#open-tracking-and-what-it-does-not-tell-you)
 - [Unsubscribes and the suppression list](#unsubscribes-and-the-suppression-list)
+- [Language (RU / EN)](#language-ru--en)
+- [Developer test panel](#developer-test-panel)
 - [Deployment](#deployment)
+- [Health checks](#health-checks)
+- [Continuous integration and the container image](#continuous-integration-and-the-container-image)
+- [Troubleshooting](#troubleshooting)
 - [Architecture and trade-offs](#architecture-and-trade-offs)
 - [Environment variables](#environment-variables)
 - [Development](#development)
@@ -66,7 +71,11 @@ npm run worker
 ```
 
 That is a plain loop that POSTs to `/api/worker/tick` every minute — exactly what
-a cron job would do in production.
+a cron job would do in production. The same tick also starts **scheduled**
+campaigns (see [Scheduled campaigns](#scheduled-campaigns)), so a scheduled
+campaign only starts while something is ticking. If nothing was, it starts on the
+first tick after that resumes, however late (see
+[Restarts and missed start times](#restarts-and-missed-start-times)).
 
 ---
 
@@ -191,6 +200,246 @@ never block the rest.
 
 Failed addresses can be exported as CSV from the campaign page.
 
+### Scheduled campaigns
+
+On the last step of the campaign wizard you can choose **Schedule** and pick a
+date and time. The campaign is saved as `SCHEDULED` with `scheduled_at` — a UTC
+instant; the wizard converts what you typed using your browser's time zone, which
+it displays next to the fields. Nothing is queued or sent at that point, and the
+campaign can no longer be edited.
+
+The time is validated twice: in the browser, and again by
+`POST /api/campaigns/:id/schedule`, which compares it with the *server's* clock
+and answers `400` with `{ error, code, field }` if it is missing, malformed, or
+not strictly in the future.
+
+**There is no separate scheduler.** The existing worker does it. Every
+`/api/worker/tick` begins by looking for campaigns with `status = 'SCHEDULED'`
+and `scheduled_at <= now()` (database clock) and, for each one, does what the
+**Queue campaign** button does — in a single transaction it locks the campaign
+row (`FOR UPDATE SKIP LOCKED`), sets `QUEUED`, and writes the recipient rows.
+From there the ordinary path takes over: the worker claims those rows within the
+hourly limit and sends them, retrying and failing exactly as for an immediate
+campaign (`SCHEDULED → QUEUED → SENDING → COMPLETED`).
+
+- **The scheduled time is when sending starts, not when it finishes.** A large
+  campaign still goes out at `SMTP_MAX_EMAILS_PER_HOUR`; the rate limiter is not
+  bypassed or given a separate path.
+- **Precision is the worker's interval.** With the default one-minute tick a
+  campaign starts within about a minute of its time; with a 5-minute external cron
+  it can start up to 5 minutes late. Set `WORKER_TICK_INTERVAL_SECONDS` to match.
+- **Restarts and downtime are safe.** The schedule lives in the database, not in
+  any process. A campaign that came due while the worker was down starts on the
+  next tick — however late that is; it is not skipped. The log line records how
+  late (`lateSeconds`).
+- **No double start.** Only one of several concurrent workers gets the row lock;
+  the rest skip it. If the transaction fails or the process dies midway, it rolls
+  back: the campaign stays `SCHEDULED` with no partial queue, and the next tick
+  retries it. A campaign that keeps failing is retried every tick and logged as
+  `[scheduler] activation failed`, while the others proceed.
+- **Empty audience.** If by the scheduled time everyone has unsubscribed or been
+  removed, there is nothing to send: the campaign becomes `CANCELLED` (and is
+  logged) instead of being retried forever.
+- If SMTP is not configured when the time arrives the campaign is still queued,
+  and its mail waits until SMTP is set up.
+
+#### Seeing and cancelling scheduled campaigns
+
+In the **Campaigns** list a scheduled campaign shows the `SCHEDULED` badge, the
+line *Scheduled for …* with its start time, and the number of recipients it is
+expected to have (`≈ N` — an estimate, because the queue is only built when
+sending starts). Campaigns that are not scheduled show no such line. The list
+API returns `scheduledAt` (ISO 8601, UTC, with `Z`; `null` when not scheduled)
+and, for `SCHEDULED` rows only, `estimatedRecipients`.
+
+While a campaign is still `SCHEDULED` it can be cancelled, from the list
+(**Cancel**) or from the campaign's own page (**Cancel scheduled send**). Both
+ask for confirmation, naming the campaign and its start time. Nothing is deleted:
+the campaign becomes `CANCELLED`, and its `scheduled_at` is kept as history.
+
+`POST /api/campaigns/:id/cancel-scheduled` (session and same-origin required):
+
+| Response | Meaning |
+| --- | --- |
+| `200 { ok, alreadyCancelled: false, campaign }` | It was `SCHEDULED`; it is now `CANCELLED`. |
+| `200 { ok, alreadyCancelled: true, campaign }` | A repeat. Nothing changed. |
+| `404` | No such campaign. |
+| `409` | It is not `SCHEDULED` (already `QUEUED`, `SENDING`, `COMPLETED`…). Nothing changed. |
+
+It is separate from `POST /api/campaigns/:id/cancel`, which stops a send that is
+already under way (`QUEUED`, `SENDING`, `PAUSED`). The two are kept apart on
+purpose: a page that still shows "scheduled" can never cancel a campaign that has
+since started. The request body is ignored; the status to move from is not the
+client's to say.
+
+**Cancel versus start.** Cancelling and starting are both a conditional write on
+`status = 'SCHEDULED'` against the same campaign row, so exactly one wins:
+
+- *Cancel first:* the campaign is `CANCELLED`, the worker no longer finds it (or,
+  if the cancel is still uncommitted, its `SKIP LOCKED` claim steps over the row),
+  and it never starts.
+- *Start first:* the campaign is `QUEUED`, so the cancel matches nothing, waits
+  for the start's transaction to finish, and answers `409`. The send carries on.
+
+There are no pre-created jobs to withdraw: the queue does not exist until the
+start, so the status is the whole story.
+
+#### Changing the time of a scheduled campaign
+
+While a campaign is `SCHEDULED` its time can be changed, from the list (**Change
+time**) or from the campaign's own page (**Change time** beside *Cancel scheduled
+send*). The action is offered for `SCHEDULED` campaigns only. It opens the same
+form as the wizard's date and time step, filled with the current time in your
+time zone (shown, with the current time in words), and **Save** is refused, in the
+browser, for a time that is not in the future (checked again at the moment you press
+it). The list and the page show the new time at once, without a reload.
+
+`PATCH /api/campaigns/:id/schedule` with `{ "scheduledAt": "2026-10-16T09:00:00+02:00" }`
+(session and same-origin required). The value is an ISO 8601 instant with a zone
+designator, exactly as for `POST`, and is stored as UTC. It is the only thing the
+endpoint reads; the status and every other field are not the client's to set.
+
+| Response | Meaning |
+| --- | --- |
+| `200 { ok, scheduledAt, campaign }` | Moved. The campaign is still `SCHEDULED`, at the new time. |
+| `400 { error, code, field }` | No time, a malformed one, or one that is not strictly in the future (`SCHEDULE_*`). Nothing changed. |
+| `401` / `403` | No session / a request from another site. |
+| `404` | No such campaign. |
+| `409` | It is not `SCHEDULED` (`QUEUED`, `SENDING`, `PAUSED`, `COMPLETED`, `CANCELLED`, `DRAFT`), **or its time has already come** and the scheduler is entitled to start it. Nothing changed. |
+
+**Moving versus starting.** Like cancelling, the move is one conditional write
+against the campaign row the worker also claims:
+`UPDATE … WHERE status = 'SCHEDULED' AND scheduled_at > now()` (database clock, the
+worker's own). A check made before the write would not be enough, so this one is
+made *by* the write:
+
+- *Move first:* `scheduled_at` is the new time. The worker's claim re-reads the row
+  under its lock, sees a time in the future and leaves it (or, if the move is still
+  uncommitted, its `SKIP LOCKED` steps over the row). It starts at the new time.
+- *Start first:* the campaign is `QUEUED` (or locked mid-start), so the move waits
+  for that transaction, matches nothing and answers `409`. Nothing is changed.
+- A campaign whose time has come but which a worker tick has not reached yet still
+  reads `SCHEDULED`; the move is refused (`409`) as well, so a stale page cannot
+  take a campaign back from the scheduler.
+
+Nothing else is involved: no job is created or replaced, no timer exists to cancel,
+no recipient row is written or changed. The worker reads `scheduled_at` afresh on
+every tick, so it starts the campaign at the new time — later or earlier, as long as
+it is still ahead — and never at the old one. The new time survives a restart
+because it is in the database.
+
+Every signed-in user is an admin of the whole workspace: the app has no campaign
+owners or roles, so the checks are the session (`401`) and the same-origin rule
+(`403`), not per-campaign ownership.
+
+#### Time zones
+
+- **What is stored.** `campaigns.scheduled_at` is a `timestamptz`: one absolute
+  instant, held in UTC. The API sends and receives it as ISO 8601 with an explicit
+  designator (`2026-10-15T08:30:00.000Z`; an offset such as `+02:00` is accepted
+  on input and normalised). A value without one is rejected, so the server's own
+  zone can never be guessed at. The server compares instants only.
+- **Whose zone.** The app has no per-user time-zone setting, so the user's zone
+  is **the browser's** (`Intl.DateTimeFormat().resolvedOptions().timeZone`, an
+  IANA name such as `Europe/Madrid`). Someone travelling, or two admins in
+  different countries, each see and enter times in their own zone. It is
+  displayed next to the date and time fields, in the confirmation dialogs, and on
+  the campaign page. No `scheduledTimezone` column is stored: the instant is what
+  matters, and each viewer's own zone is what they should read it in.
+- **One mechanism.** Everything that turns typed input into an instant, and an
+  instant into text, lives in `src/lib/scheduling.ts` (`toScheduledAt`,
+  `formatScheduledTime`, `describeLocalTimeZone`); the UI does not format these
+  times by hand anywhere else. Times are shown in the viewer's locale with the
+  zone's short name (e.g. `15 Oct 2026, 10:30 CEST`), and are marked up as
+  `<time datetime="…Z">` with the IANA zone and UTC instant in the tooltip.
+- **Daylight saving.** Offsets come from the IANA rules for the zone on the
+  chosen date, never a fixed number. A wall-clock time that does not exist
+  (clocks jump forward) is rejected with a message next to the time field. A time
+  that happens twice (clocks go back) is not guessed: the wizard shows both
+  instants, with their UTC offsets, and asks which is meant.
+
+#### Running the scheduler
+
+There is no separate scheduler service: **the worker tick is the scheduler**. Every
+`POST /api/worker/tick` first looks for `SCHEDULED` campaigns that are due, then
+does the ordinary queue work. So a scheduled campaign starts only if something
+calls that endpoint regularly. Pick one:
+
+| How | Command / setting |
+| --- | --- |
+| Docker Compose (`docker compose --profile app up`) | Nothing to set: the `worker` service is the ticker. (A single container without a worker service can set `RUN_INTERNAL_WORKER=true` instead.) |
+| Any machine, as its own process | `npm run worker` (from a build: `node dist-scripts/worker-loop.cjs`). Point `WORKER_TARGET_URL` at the app if it is not on `127.0.0.1:$PORT`. Give it `WORKER_SECRET`. |
+| Vercel Pro / any external cron | Call `POST /api/worker/tick` with `Authorization: Bearer $WORKER_SECRET` every minute (`vercel.json` already declares this). |
+
+The ticker (`npm run worker`) keeps no schedule and no state of its own; the
+schedule is `campaigns.scheduled_at` in Postgres. It ticks every
+`WORKER_TICK_INTERVAL_SECONDS` (default 60). If a tick fails — the app is down,
+the database is down, the request hangs past `WORKER_REQUEST_TIMEOUT_SECONDS`
+(default 90) — it logs it and tries again after 5 s, 10 s, 20 s … never longer
+than the normal interval, so it recovers within seconds of the app coming back
+instead of waiting a full minute. Ticks never overlap, and on `SIGTERM`/`SIGINT`
+it stops waiting at once and exits after the tick in progress.
+
+#### Restarts and missed start times
+
+Nothing about a schedule lives in memory: no `setTimeout`, no per-campaign timer.
+A scheduled campaign is a row (`status = 'SCHEDULED'`, `scheduled_at`), and every
+tick asks the database which rows are due (`scheduled_at <= now()`, by the
+database's clock). So:
+
+- **A restart changes nothing.** Stopping the app, the ticker, or both — cleanly
+  or with `kill -9` — leaves the row as it was. Boot-time migrations do not touch
+  it either.
+- **A missed time is not lost.** If the app was down at 10:00 and back at 10:15,
+  the first tick after it is back finds the campaign overdue and starts it
+  (`SCHEDULED → QUEUED`), whatever the delay: the test is "due", never "due this
+  minute". Several overdue campaigns are started one after another, **oldest
+  schedule first**, each in its own transaction, so one that fails does not hold
+  up the others; it stays `SCHEDULED` and is retried on the next tick. Up to
+  `SCHEDULER_BATCH_LIMIT` (default 100) are started per tick; campaigns that
+  fail do not use up that allowance.
+- **The hourly rate limit still applies.** Starting a campaign only writes its
+  recipient rows; delivery is the ordinary queue, so a backlog of overdue
+  campaigns after an outage is sent at `SMTP_MAX_EMAILS_PER_HOUR`, oldest first,
+  and never as a burst.
+- **The actual start is logged.** Each start writes
+  `[scheduler] activated campaign { campaignId, scheduledAt, activatedAt, lateSeconds, recipients }`
+  (there is no metrics system to feed; `lateSeconds` is the delay).
+  Cancelled campaigns, and campaigns already `QUEUED`, `SENDING` or
+  `COMPLETED`, are never started.
+
+**No campaign is left half-started.** Starting a campaign is one database
+transaction: lock the campaign row (`FOR UPDATE SKIP LOCKED`), set `QUEUED`, write
+the recipient rows. If the process dies anywhere in it — or the connection drops —
+Postgres rolls it back, and the campaign is exactly as it was: `SCHEDULED`, no
+rows, picked up again on the next tick. There is no moment at which it is `QUEUED`
+without a queue, and none at which a queue exists that the status does not know
+about. The recipient rows are `UNIQUE (campaign_id, email_normalized)` and written
+with `ON CONFLICT DO NOTHING`, so even a repeated start cannot duplicate a job or
+email anyone twice; and the sender only claims rows of `QUEUED`/`SENDING`
+campaigns, so rows of a still-`SCHEDULED` or `CANCELLED` one are never sent.
+
+As a safety net for data from before this was atomic (or an older instance that
+is still running during a deploy), every tick also repairs a campaign that has
+been `QUEUED` with **no recipient rows at all** for longer than
+`STUCK_CAMPAIGN_GRACE_SECONDS` (default 300): it writes the queue, or, if nobody is
+left to send to, cancels it (it sent nothing, so it is never shown as `COMPLETED`).
+A `QUEUED` campaign whose queue has fully finished without a single send (say
+everyone unsubscribed) is completed rather than left waiting.
+
+**Several instances.** Any number of workers may tick at once: the campaign row
+lock means exactly one starts a given campaign, and the others skip it without
+waiting.
+
+**When the database is down.** A tick that cannot reach it fails (HTTP 500, logged);
+nothing is changed and no campaign moves. In a scheduler cycle, the first
+connection failure ends the cycle rather than trying every campaign against a dead
+database. The ticker retries within seconds; Postgres.js reconnects by itself, so
+after a database restart the first few queries can report `CONNECTION_CLOSED`
+before the pool is healthy again. The queue is in the same database, so there is
+no separate queue to be down. If SMTP is unreachable, the batch is abandoned,
+its attempts are handed back, and the same rows are sent when it returns.
+
 ### Pause / resume / cancel
 
 The worker only claims from campaigns whose status is `QUEUED` or `SENDING`.
@@ -213,8 +462,10 @@ This is the constraint the schema and the worker are built around.
    enforced by the database. Recipient generation uses `ON CONFLICT DO NOTHING`,
    so a double-clicked Send button or a retried HTTP request cannot duplicate the
    queue.
-2. **The `DRAFT → QUEUED` transition is a conditional `UPDATE`.** Only one
-   concurrent request can win; the loser gets a 409.
+2. **Queuing a campaign is one transaction that starts by locking its row**
+   (`FOR UPDATE SKIP LOCKED`, only while it is still `DRAFT`, or `SCHEDULED` and
+   due). Only one concurrent request or worker can win; the loser gets a 409 (or,
+   for a worker, skips the campaign). A failure rolls the whole thing back.
 3. **Claiming is atomic and increments `attempts` before any SMTP traffic.** A
    row is accounted for even if the process dies immediately afterwards.
 4. **Terminal updates are conditional on still being `SENDING`.** A late write
@@ -324,7 +575,7 @@ requirement drives the whole decision.
 
 | Platform | Verdict |
 | --- | --- |
-| **Docker on a small VPS / Fly.io / Railway / Render** | **Recommended.** Set `RUN_INTERNAL_WORKER=true` and the container ticks itself. No external scheduler, no plan restrictions. ~$5/month. |
+| **Docker on a small VPS / Fly.io / Railway / Render** | **Recommended.** Run the `web` and `worker` services (compose does), or one container with `RUN_INTERNAL_WORKER=true`. No external scheduler, no plan restrictions. ~$5/month. |
 | **Vercel Pro** | Works well. `vercel.json` already declares a `* * * * *` cron. Function duration is capped at 60s, which the worker respects. |
 | **Vercel Hobby (free)** | **Not sufficient on its own.** Hobby cron jobs run **once per day**, which cannot drive an 83-emails-per-minute queue. See below. |
 | **Any host + an external cron** | Works anywhere. Point cron-job.org, GitHub Actions, or a cron on another machine at the worker endpoint. |
@@ -334,17 +585,52 @@ scheduler is a deployment choice, not an architectural one.
 
 ### Docker (recommended)
 
+One image runs every process; what a container does is its command:
+
+| Service (`compose.yaml`) | Command | What it is |
+| --- | --- | --- |
+| `db` | `postgres:17-alpine` | PostgreSQL. Its data is the named volume `mailer-db`. Published on `127.0.0.1` only (port `5435`), for `npm run dev` and `npm test`; the other containers reach it over the compose network. |
+| `migrate` | `node dist-scripts/migrate.cjs` | Applies the database migrations once and exits. `web` and `worker` wait for it, so no two containers ever migrate at the same time. |
+| `web` | `node server.js` | The application, on port `3000`. |
+| `worker` | `node dist-scripts/worker-loop.cjs` | The ticker. It calls the web server's worker endpoint every `WORKER_TICK_INTERVAL_SECONDS`; **that tick is the scheduler** (it starts due scheduled campaigns) **and** the queue processor (it sends what the rate limit allows). There is no separate scheduler process. |
+| `mailpit` | profile `smtp-test` | A local mail server that keeps what it is sent instead of delivering it. |
+
 ```bash
-cp .env.example .env      # fill in ENCRYPTION_KEY, WORKER_SECRET, APP_URL
-docker compose --profile app up --build -d
-docker compose exec app node dist-scripts/create-admin.cjs you@example.com 'password'
+cp .env.example .env
+# fill in ENCRYPTION_KEY and WORKER_SECRET (openssl rand -hex 32 for each) and APP_URL
+
+docker compose --profile app up --build -d        # migrate, web and worker
+docker compose exec web node dist-scripts/create-admin.cjs you@example.com 'a-long-password'
 ```
 
-The container applies migrations on boot and, with `RUN_INTERNAL_WORKER=true`,
-runs its own ticker.
+Open http://localhost:3000 and sign in. That is the whole procedure; `docker compose ps` shows every service
+`healthy` (see [Health checks](#health-checks)).
 
-For a managed database instead of the bundled one, point `DATABASE_URL` at it and
-start only the `app` service.
+- **Migrations** run as their own step, not at every start, because several replicas starting together would
+  race each other. After an upgrade run `docker compose --profile app run --rm migrate` (or just
+  `docker compose --profile app up --build -d`, which runs it first). A single container can opt in to migrating
+  when it starts with `AUTO_MIGRATE=true`; never turn that on for several replicas.
+- **Only Postgres is needed for development:** `docker compose up -d db`, then `npm run dev`.
+- **Test mail:** `docker compose --profile app --profile smtp-test up -d`, then in **Settings** use host `mailpit`,
+  port `1025`, security `none` (or set `SMTP_HOST=mailpit SMTP_PORT=1025 SMTP_SECURITY=none
+  SMTP_FROM_EMAIL=sender@example.test` in `.env`). Read the mail at http://localhost:8025. Nothing is delivered.
+- **A managed database** instead of the bundled one: set `DATABASE_URL` for the `migrate`, `web` and `worker`
+  services (edit `compose.yaml`, or start the image yourself) and do not start `db`.
+- **Secrets** are never in the image or in `compose.yaml`. `ENCRYPTION_KEY` and `WORKER_SECRET` have no defaults, and
+  compose refuses to start without them; a production server also refuses the `replace-me…` values from
+  `.env.example`. Set `POSTGRES_PASSWORD` to your own URL-safe value for anything that is not a laptop.
+- **Restarting is safe at any moment.** Every schedule (`campaigns.scheduled_at`) and the queue live in Postgres.
+  `docker compose down` (without `-v`) and `up` keeps them; a campaign whose time passed while everything was
+  down starts on the first tick after the containers are back; the rate limit counts sends already recorded in the
+  database, so a restart cannot let it be exceeded. `docker compose down -v` deletes the database volume.
+- **The image** runs as the unprivileged `node` user, holds no secrets, starts through `tini` (so `docker stop`
+  reaches the server at once) and is built in three stages (dependencies, build, runtime). Only the standalone
+  server, the static files, the migrations and the bundled scripts are in it.
+
+```bash
+docker build -t mailer .                     # the image alone
+docker run --rm -p 3000:3000 --env-file .env mailer
+```
 
 ### Vercel
 
@@ -408,6 +694,57 @@ inside your platform's function timeout.
   Keep `DATABASE_POOL_MAX` small (5 is the default).
 - **Serverless cold starts** add latency to a tick but cost nothing in
   correctness — an interrupted tick just leaves rows queued for the next one.
+
+---
+
+## Health checks
+
+- `GET /api/health` — no sign-in needed. `200 {"status":"ok"}` when the server is up and can reach the database,
+  `503 {"status":"unavailable"}` when it cannot. It says nothing else; the reason is in the server's log. The image's
+  `HEALTHCHECK` and the compose `web` check use it.
+- `worker` — healthy while the ticker has had an answer from the web server within three intervals and a minute
+  (it touches `WORKER_HEARTBEAT_FILE` after each answered tick).
+- `db` — `pg_isready`. `migrate` — succeeds or fails; `web` and `worker` do not start until it has succeeded.
+
+```bash
+docker compose ps                  # STATUS shows (healthy)
+curl -s http://localhost:3000/api/health
+```
+
+## Continuous integration and the container image
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request. It uses no repository secrets, so a
+pull request from a fork is checked the same way and cannot reach any:
+
+1. **Lint, types, tests, build** — `npm ci` (from the lock file), `npm run lint`, `npm run typecheck`, `npm test`
+   against a real Postgres service, `npm run build`, a check that the developer test panel is not in the
+   production build, and `npm audit --omit=dev --audit-level=high`.
+2. **Secret scan** — gitleaks over the repository history.
+3. **Docker image** — builds the image (not pushed) and checks that it runs as a normal user and carries no `.env`,
+   no test mail and no `sharp`.
+
+`.github/workflows/publish-image.yml` publishes `ghcr.io/<owner>/<repository>` **only** after CI has passed on a push
+to `main` (tags `latest` and `sha-<commit>`) or on a version tag such as `v1.2.3` (tag `1.2.3`). It never runs for a pull
+request. There is no code formatter configured in this project, so there is no format check.
+
+```bash
+docker pull ghcr.io/<owner>/<repository>:latest
+```
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `docker compose up` stops with `set ENCRYPTION_KEY in .env` | Both secrets are required. `openssl rand -hex 32` for each, in `.env`. |
+| `web` is `unhealthy` | `docker compose logs web`. Usually `DATABASE_URL` is wrong, or the database is not up (`/api/health` answers `503`). |
+| `web` and `worker` never start, `migrate` shows `Exited (1)` | A migration failed; `docker compose logs migrate`. |
+| The worker logs `401` | `WORKER_SECRET` differs between `web` and `worker`, or is still the `replace-me…` example value. |
+| Scheduled campaigns do not start | Nothing is calling the worker endpoint: start the `worker` service (or see [Running the scheduler](#running-the-scheduler)). |
+| `ENCRYPTION_KEY is missing, too short or still the example value` | Set a real key. Changing it later means re-entering the stored SMTP password. |
+| `429` when signing in | Too many failed attempts; wait about ten minutes, or restart the server. |
+| `password authentication failed` after changing `POSTGRES_PASSWORD` | The database volume keeps the password it was created with. Change it inside Postgres, or `docker compose down -v` (deletes the data). |
+| Port already in use | Set `WEB_PORT` or `DB_PORT` in `.env`. |
+| Links in email point at `localhost` | `APP_URL` must be the public address. |
 
 ---
 
@@ -485,12 +822,159 @@ See `.env.example` for the annotated list. The essentials:
 | `WORKER_TIME_BUDGET_MS` | no | Default `45000`; stay under your platform's timeout. |
 | `WORKER_BATCH_CAP` | no | Default `200` recipients per tick. |
 | `WORKER_CONCURRENCY` | no | Default `4` parallel sends. |
-| `WORKER_TICK_INTERVAL_SECONDS` | no | Default `60`. Match your actual cron interval. |
-| `RUN_INTERNAL_WORKER` | no | `true` only for the Docker/VPS deployment. |
+| `WORKER_TICK_INTERVAL_SECONDS` | no | Default `60`. Match your actual cron interval. Scheduled campaigns start within about one interval of their time. |
+| `WORKER_REQUEST_TIMEOUT_SECONDS` | no | Default `90`. `npm run worker` abandons a tick that takes longer and retries. |
+| `SCHEDULER_BATCH_LIMIT` | no | Default `100`. Most scheduled campaigns started per tick. |
+| `STUCK_CAMPAIGN_GRACE_SECONDS` | no | Default `300`. How long a `QUEUED` campaign may have no recipient rows before it is repaired. |
+| `EMAIL_LANGUAGE` | no | `ru` (default) or `en`. The language of the text the app adds to emails (unsubscribe footer, plain-text line) and the fallback for the unsubscribe page. The admin's screen language does not affect it. |
+| `ENABLE_EMAIL_TEST_PANEL` | no | `true` switches on the developer test panel, **only** in a development or test environment. Default `false`; never available in production. See [Developer test panel](#developer-test-panel). |
+| `TEST_SMTP_OUTPUT_DIR`, `TEST_SMTP_PORT` | no | Where the built-in test SMTP server saves `.eml` files (default `received-emails/`, ignored by Git) and its port (default: any free one). Only used while the panel is on. |
+| `RUN_INTERNAL_WORKER` | no | `true` only for a single container without a `worker` service: starts (and restarts) the ticker next to the server. |
+| `AUTO_MIGRATE` | no | `true` makes a container apply migrations when it starts. Off by default; for one container only (see [Docker](#docker-recommended)). |
+| `WORKER_HEARTBEAT_FILE` | no | A file the ticker touches after every answered tick; the compose health check for `worker` reads it. |
+| `POSTGRES_PASSWORD`, `WEB_PORT`, `DB_PORT`, `MAILER_IMAGE` | no | Read by `compose.yaml` only. |
 | `SMTP_*` | no | Override the stored settings entirely. Useful if you would rather keep credentials out of the database. **When set, the Settings page marks the affected fields as overridden**, so you are never editing a value that has no effect. |
 
 Never commit real credentials. `.env` is gitignored; `.env.example` contains
 placeholders only.
+
+---
+
+## Language (RU / EN)
+
+The interface is in **Russian by default**, with an **RU | EN** switcher in the header
+(and on the sign-in and unsubscribe pages). The choice is remembered in a cookie
+(`locale`, one year); nothing about the URLs changes.
+
+What follows the language you pick:
+
+- every screen, dialog, tooltip and screen-reader label, the tab title and `<html lang>`;
+- dates and numbers (`24 сент. 2026 г., 22:25` / `Sep 24, 2026, 10:25 PM`, `4 850` / `4,850`);
+- the text of API errors. The app's own pages send an `x-locale` header with every
+  request, so a refusal such as "Campaign not found" arrives as «Рассылка не найдена».
+  A caller that says nothing (a script, cron, `curl`) gets **English**, the stable,
+  documented wording.
+
+What does **not** follow it:
+
+- **Email text the app adds** (the unsubscribe footer and the plain-text line). It is a
+  property of the deployment, so switching your screen to English cannot change what
+  recipients receive. It is Russian unless you set `EMAIL_LANGUAGE=en`.
+- **The public unsubscribe page** a recipient opens from an email: their own choice
+  (the switcher on that page), else their browser's language, else `EMAIL_LANGUAGE`.
+- Anything you or your contacts wrote: names, subjects, bodies, list names. SMTP
+  servers' replies and log lines stay as they are.
+
+Time zones are unaffected: times are always shown in the browser's own zone.
+
+**Where the text lives.** Every string is in `src/i18n/messages/*.ts`, one entry per
+key with both languages side by side (`{ en: "Cancel", ru: "Отмена" }`), so a missing
+translation is a type error. Counts use plural sets (`plural(...)`; Russian needs
+`one`, `few`, `many`, `other`). Components call `useT()` (or `translate()` on the
+server); API routes throw a message *key*, and `handle()` words it for the caller.
+
+**Guards.** `tests/i18n-dictionaries.test.ts` checks that every key is complete, has
+the same `{placeholders}` in both languages, and that plural sets are whole.
+`tests/i18n-hardcoded.test.ts` parses every screen and fails on any literal English
+left in JSX text, text attributes (`title`, `placeholder`, `aria-label`, …), or
+`confirm()`/`alert()`/error messages.
+
+**Adding a language** means: add it to `Locale`/`LOCALES` in `src/i18n/locale.ts`,
+give every entry a third value (the compiler lists what is missing), and add its
+plural rules to `plural()` if it needs forms other than `one`/`other`.
+
+---
+
+## Developer test panel
+
+A drawer for testing scheduled sending by hand, without waiting and without touching a real
+mail server. It has a **test clock**, a **scheduler** you can start, stop and run once, a
+**rate limit** you can shrink so it is visible, a form for **test campaigns**, an **event
+journal**, a built-in **test SMTP server**, and a step-by-step **tour** and nine **scenarios**.
+
+### Switching it on and off
+
+```bash
+# .env  (never commit it; .env.example only has the switch, set to false)
+ENABLE_EMAIL_TEST_PANEL=true
+```
+
+Restart `npm run dev`. The panel exists only when **both** are true: `NODE_ENV` is `development` or
+`test`, and the flag is exactly `true`. Off by default. If the environment cannot be told for
+certain, it is off. Remove the line (or set `false`) and restart to switch it off.
+
+You see a **Test Panel** button at the bottom right and an amber **TEST MODE** banner under the
+header (it says when the test time is held or a test rate limit is set). The button opens a
+drawer on the right that leaves the page usable beside it; it scrolls, and takes the whole width
+on a narrow screen. `Escape` closes it.
+
+While the panel is on, **all mail goes to the built-in test SMTP server**, whatever SMTP is
+configured: it accepts only made-up `@test.invalid` addresses, delivers to nobody and saves each
+message as an `.eml` file in `received-emails/`. Start `npm run dev` alone; the panel runs its own
+scheduler (you do not need `npm run worker`).
+
+### What each part does
+
+| Part | What it does |
+| --- | --- |
+| **Test Clock** | Holds the application's clock at a moment you choose (a date, a time, a zone), moves it by 1 minute, 5 minutes, 1 hour or 1 day, or releases it. It changes what the *schedule rules* take as "now": whether a time you ask for is still ahead, and which scheduled campaigns the scheduler finds due. It never changes the computer's clock, and it is not read by mail delivery, retry waits or the rate-limit window, which stay in real time. |
+| **Scheduler** | A loop inside the server that runs one cycle every few seconds. **Start** / **Stop** the loop, **Run now** for exactly one cycle. It is the same service the worker endpoint uses (`runSchedulerCycle`): it queues campaigns whose time has come and lets the queue send what the rate limit allows; it sends nothing itself. **Stop** changes no campaign status, and while it is stopped the worker endpoint is refused too. |
+| **Queue and Rate Limit** | Shows the queue (waiting, active, completed, failed) and the limit in force, and sets "at most **N** emails per **W** seconds" for the existing rate limiter (rate = N / W). It is not a second limiter. **Reset to defaults** returns to the configured hourly ceiling. |
+| **Create Test Campaign** | Makes a campaign for made-up recipients (you never type an address) and sends or schedules it by the ordinary services. Seven templates fill the form; a campaign that is already overdue is the one thing written directly, because the normal API refuses a past time. Every test campaign, and its list, is named `[TEST] …`. |
+| **Test campaigns** | The campaigns made here: open, run a cycle, change time (the ordinary form), cancel (the ordinary confirmation), queue rows, status history, `scheduledAt` in UTC and in your zone, refresh, and **reset** (deletes only a campaign marked `[TEST]` whose every address is a test address). |
+| **Event journal** | The scheduler's, the queue's and the rate limiter's own events, newest last, with identifiers and counts only: never an address, a message body or a credential. Clearing it clears the view, not the server's record. |
+
+The test SMTP scenarios are decided by the generated recipient address, so they survive a restart:
+**Success**, **Temporary failure** (`451` the first *k* times, then accepted, which exercises the
+retries), **Permanent failure** (`550`, no retries) and **Slow response** (accepted after a delay).
+
+### Ranges
+
+They live in one place, `TEST_LIMITS` in `src/lib/testing/limits.ts`; the forms, the server's checks
+and the help all read it, and a test keeps this table equal to it.
+
+| Setting | Allowed | Recommended |
+| --- | --- | --- |
+| Scheduler interval | 1–300 seconds | 2–5 s for quick checks; 10–30 s for leaving it running |
+| Max emails (rate limit) | 1–1000 | 2–10 |
+| Interval (rate-limit window) | 1–3600 seconds | 1–10 s |
+| Recipients of a test campaign | 1–500 | 3–10 quick; 20–50 to see rate limiting; 100–500 for a longer local run |
+| Slow response delay | 1–20 seconds | 2–5 s |
+| Temporary failures | 1–5 | 1–2 |
+| Overdue by | 1–1440 minutes | 1–10 min |
+| Test clock year | 2000–2100 | — |
+
+This is a manual check, not a load test: everything runs in one local process.
+
+### Help, the tour and the scenarios
+
+Every field, switch, figure and button has a `?` next to it (a short tooltip, or a popover with what
+it is, what it affects, unit, allowed values, recommended, when it applies, how long it lasts and
+what to watch for). They open on click, on hover with a mouse and from the keyboard; `Escape` or a
+click elsewhere closes them and the focus returns to the button. The registry is
+`src/lib/testing/help.ts`, its wording is in `src/i18n/messages/testhelp.ts` (RU and EN), and no
+range is typed into a text: ranges and recommendations are filled in from `TEST_LIMITS`.
+
+**How to test scheduling** is a ten-step tour that lights each control to use and says what to
+expect; it never presses anything for you. The **Scenarios** section has nine short guides (a normal
+scheduled start, sending at once, cancelling, moving the time, a missed start, recovery after a
+restart, rate limiting, a temporary and a permanent SMTP failure), each with what to set first, the
+steps, the expected statuses and jobs, and how to put things back. The panel remembers only the
+state of the panel itself (open, folded sections, tour step) in this browser's local storage.
+
+### How it is kept out of production
+
+- `NODE_ENV` and the flag are checked on the server, in one function (`testPanelEnabled`), by the
+  admin layout and again by every test-only endpoint. A public (`NEXT_PUBLIC_*`) variable is never consulted.
+- The test API lives in `src/app/api/dev/**/route.dev.ts`. `pageExtensions` in `next.config.ts` lists
+  `dev.ts` only outside production, so a production build **does not contain those routes at all**;
+  the panel's code is not bundled either.
+- Where they do exist they answer `404` (the same as any unknown address) unless the tools are on, and
+  then need a signed-in admin, and, for a change, a request from this site. This app has one kind of user
+  (an admin of the whole workspace), so there is no separate developer role; the flag is what makes a
+  session a tester.
+- The test clock, the rate-limit override, the test scheduler and the test SMTP server each refuse to be
+  used outside a development or test environment, and ignore anything left over.
 
 ---
 
@@ -501,7 +985,7 @@ npm run dev          # dev server
 npm run worker       # the ticker, in a second terminal
 npm run lint
 npm run typecheck
-npm test
+npm test             # needs Postgres: docker compose up -d db
 npm run build
 npm run db:generate  # after editing src/lib/db/schema.ts
 npm run db:migrate
@@ -549,11 +1033,25 @@ credential redaction, HTML sanitization, and authentication on every endpoint.
   injection.
 - **Relay abuse** — no unauthenticated path can cause an email to be sent. Test
   sends and campaign queuing both require a session.
+- **Password guessing** — after 8 failed sign-ins for an account (or 30 from one address) within 10 minutes,
+  further attempts get `429` until the window passes, even with the right password. The counts are in the
+  server's memory, so with several replicas each keeps its own: put a rate limit on the proxy too if the
+  sign-in page faces the internet.
+- **Errors** — an unexpected failure answers `500 {"error":"Unexpected error"}`; what went wrong is in the server's
+  log only. A malformed id in an address is a `404`.
+- **Headers** — every response carries `X-Frame-Options: DENY`, `X-Content-Type-Options`, a referrer and permissions
+  policy, a content policy that forbids framing, a rewritten `<base>`, foreign form targets and plug-ins, and (in
+  production) `Strict-Transport-Security`.
+- **Secrets** — the worker endpoint compares its secret in constant time; a production server refuses the example
+  `replace-me…` values for `ENCRYPTION_KEY` and `WORKER_SECRET`.
+- **One workspace** — the application has one workspace and one kind of user (an admin); there is no per-user
+  ownership of campaigns, so every admin sees and changes all of them. Give the sign-in to people you would trust
+  with all of it.
 
 ### Known advisory
 
-`npm audit` reports a moderate advisory in `esbuild`, reached via
-`drizzle-kit` → `@esbuild-kit/esm-loader`. It affects esbuild's development
-server only, is a build-time dependency, and is not present in the production
-image. It is fixable only by downgrading `drizzle-kit` to a version too old for
-this schema.
+`npm audit` reports 4 moderate advisories, all one chain: `drizzle-kit` → `@esbuild-kit/esm-loader` →
+`esbuild` ≤ 0.24.2 (a development server that answers requests from any website). `drizzle-kit` is a development
+tool (`npm run db:generate`) that never starts that server, and none of it is in the production image:
+`npm audit --omit=dev` reports **0** vulnerabilities, and that is what CI enforces. The only fix npm offers is
+downgrading `drizzle-kit` to a version too old for this schema.
