@@ -242,7 +242,7 @@ describe("the same limits are checked by the browser's helper and by the server"
 });
 
 describe("the documentation says what the code enforces", () => {
-  const readme = readFileSync(join(process.cwd(), "README.md"), "utf8");
+  const readme = readFileSync(join(process.cwd(), "docs", "README.full.md"), "utf8");
   const section = readme.slice(readme.indexOf("## Developer test panel"), readme.indexOf("## Development"));
   const row = (label: string) => section.split("\n").find((line) => line.startsWith(`| ${label}`)) ?? "";
 
