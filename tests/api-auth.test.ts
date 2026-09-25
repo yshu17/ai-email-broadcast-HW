@@ -20,6 +20,13 @@ const jsonRequest = (body: unknown = {}) =>
     body: JSON.stringify(body),
   });
 
+const patchRequest = (body: unknown = {}) =>
+  new Request("https://mail.example.test/api", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
 const ctx = (id = "00000000-0000-0000-0000-000000000000") => ({ params: Promise.resolve({ id }) });
 
 describe("admin endpoints require a session", () => {
@@ -62,6 +69,18 @@ describe("admin endpoints require a session", () => {
     expect((await POST(jsonRequest(), ctx())).status).toBe(401);
   });
 
+  it("POST /api/campaigns/:id/schedule — sends cannot be scheduled anonymously", async () => {
+    const { POST } = await import("@/app/api/campaigns/[id]/schedule/route");
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+    expect((await POST(jsonRequest({ scheduledAt: future }), ctx())).status).toBe(401);
+  });
+
+  it("PATCH /api/campaigns/:id/schedule — a schedule cannot be moved anonymously", async () => {
+    const { PATCH } = await import("@/app/api/campaigns/[id]/schedule/route");
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+    expect((await PATCH(patchRequest({ scheduledAt: future }), ctx())).status).toBe(401);
+  });
+
   it("POST /api/campaigns/:id/test", async () => {
     const { POST } = await import("@/app/api/campaigns/[id]/test/route");
     expect((await POST(jsonRequest({ to: "a@b.com" }), ctx())).status).toBe(401);
@@ -74,6 +93,11 @@ describe("admin endpoints require a session", () => {
     for (const mod of [pause, resume, cancel]) {
       expect((await mod.POST(jsonRequest(), ctx())).status).toBe(401);
     }
+  });
+
+  it("POST /api/campaigns/:id/cancel-scheduled — a schedule cannot be cancelled anonymously", async () => {
+    const { POST } = await import("@/app/api/campaigns/[id]/cancel-scheduled/route");
+    expect((await POST(jsonRequest(), ctx())).status).toBe(401);
   });
 
   it("GET /api/campaigns/:id/recipients and /failures", async () => {
@@ -110,6 +134,36 @@ describe("CSRF protection on mutating endpoints", () => {
 
     const { POST } = await import("@/app/api/lists/route");
     const response = await POST(jsonRequest({ name: "Attacker list" }));
+
+    expect(response.status).toBe(403);
+    expect((await response.json()).error).toContain("Cross-origin");
+  });
+
+  it("rejects a cross-origin attempt to cancel a scheduled campaign", async () => {
+    vi.resetModules();
+    vi.doMock("next/headers", () => ({
+      cookies: async () => ({ get: () => ({ value: "session-token" }) }),
+      headers: async () =>
+        new Headers({ origin: "https://evil.example.com", host: "mail.example.test" }),
+    }));
+
+    const { POST } = await import("@/app/api/campaigns/[id]/cancel-scheduled/route");
+    const response = await POST(jsonRequest(), ctx());
+
+    expect(response.status).toBe(403);
+  });
+
+  it("rejects a cross-origin attempt to move a scheduled campaign", async () => {
+    vi.resetModules();
+    vi.doMock("next/headers", () => ({
+      cookies: async () => ({ get: () => ({ value: "session-token" }) }),
+      headers: async () =>
+        new Headers({ origin: "https://evil.example.com", host: "mail.example.test" }),
+    }));
+
+    const { PATCH } = await import("@/app/api/campaigns/[id]/schedule/route");
+    const future = new Date(Date.now() + 86_400_000).toISOString();
+    const response = await PATCH(patchRequest({ scheduledAt: future }), ctx());
 
     expect(response.status).toBe(403);
     expect((await response.json()).error).toContain("Cross-origin");

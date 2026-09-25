@@ -14,7 +14,7 @@ type Ctx = { params: Promise<{ id: string }> };
 
 async function loadCampaign(id: string) {
   const rows = await db.select().from(campaigns).where(eq(campaigns.id, id)).limit(1);
-  if (!rows[0]) notFound("Campaign not found");
+  if (!rows[0]) notFound("err.campaign.notFound");
   return rows[0];
 }
 
@@ -55,7 +55,7 @@ export async function PATCH(request: Request, ctx: Ctx) {
     // Content is frozen once the queue exists: changing it mid-send would mean
     // different recipients receive different emails from one "campaign".
     if (campaign.status !== "DRAFT") {
-      conflict(`This campaign is ${campaign.status} and can no longer be edited`);
+      conflict("err.campaign.locked", { status: campaign.status });
     }
 
     const body = await readJson<Body>(request);
@@ -66,17 +66,18 @@ export async function PATCH(request: Request, ctx: Ctx) {
     if (body.fromName !== undefined) patch.fromName = optionalStr(body.fromName, "Sender name", 200);
     if (body.replyTo !== undefined) {
       const replyTo = optionalStr(body.replyTo, "Reply-To", 254);
-      if (replyTo && !isValidEmail(replyTo)) badRequest("Reply-To is not a valid address");
+      if (replyTo && !isValidEmail(replyTo)) badRequest("err.replyTo.invalid");
       patch.replyTo = replyTo;
     }
     if (body.fromEmail !== undefined) {
       const fromEmail = optionalStr(body.fromEmail, "Sender email", 254);
-      if (fromEmail && !isValidEmail(fromEmail)) badRequest("Sender email is not a valid address");
+      if (fromEmail && !isValidEmail(fromEmail)) badRequest("err.senderEmail.invalid");
       patch.fromEmail = fromEmail;
     }
 
     if (body.contentHtml !== undefined) {
-      if (body.contentHtml.length > 500_000) badRequest("Email content is too large");
+      if (typeof body.contentHtml !== "string") badRequest("err.field.string", { field: "contentHtml" });
+      if (body.contentHtml.length > 500_000) badRequest("err.campaign.contentTooLarge");
       // Sanitize on the way in, so nothing unsafe is ever stored or re-rendered.
       const clean = sanitizeEmailHtml(body.contentHtml);
       patch.contentHtml = clean;
@@ -110,7 +111,7 @@ export async function DELETE(_request: Request, ctx: Ctx) {
     const { id } = await ctx.params;
     const campaign = await loadCampaign(id);
     if (campaign.status === "SENDING") {
-      conflict("Cancel the campaign before deleting it");
+      conflict("err.campaign.cancelBeforeDelete");
     }
     await db.delete(campaigns).where(eq(campaigns.id, id));
     return NextResponse.json({ ok: true });

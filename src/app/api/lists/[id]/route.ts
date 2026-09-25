@@ -10,7 +10,7 @@ export async function GET(_request: Request, ctx: Ctx) {
   return withAuth(async () => {
     const { id } = await ctx.params;
     const rows = await db.select().from(contactLists).where(eq(contactLists.id, id)).limit(1);
-    if (!rows[0]) notFound("List not found");
+    if (!rows[0]) notFound("err.list.notFound");
     return NextResponse.json({ list: rows[0] });
   });
 }
@@ -28,7 +28,7 @@ export async function PATCH(request: Request, ctx: Ctx) {
       })
       .where(eq(contactLists.id, id))
       .returning();
-    if (!rows[0]) notFound("List not found");
+    if (!rows[0]) notFound("err.list.notFound");
     return NextResponse.json({ list: rows[0] });
   });
 }
@@ -39,7 +39,7 @@ export async function DELETE(_request: Request, ctx: Ctx) {
     // Memberships cascade; the contacts themselves survive, since they may be
     // on other lists and are referenced by historical campaign recipients.
     const rows = await db.delete(contactLists).where(eq(contactLists.id, id)).returning();
-    if (!rows[0]) notFound("List not found");
+    if (!rows[0]) notFound("err.list.notFound");
     return NextResponse.json({ ok: true });
   });
 }

@@ -25,13 +25,13 @@ export async function PUT(request: Request) {
     const body = await readJson<Body>(request);
 
     const security = str(body.smtpSecurity, "Encryption mode", { max: 20 }) as SmtpSecurity;
-    if (!["none", "starttls", "tls"].includes(security)) badRequest("Invalid encryption mode");
+    if (!["none", "starttls", "tls"].includes(security)) badRequest("err.settings.encryption");
 
     const fromEmail = optionalStr(body.fromEmail, "Sender email", 254);
-    if (fromEmail && !isValidEmail(fromEmail)) badRequest("Sender email is not a valid address");
+    if (fromEmail && !isValidEmail(fromEmail)) badRequest("err.senderEmail.invalid");
 
     const replyTo = optionalStr(body.replyTo, "Reply-To", 254);
-    if (replyTo && !isValidEmail(replyTo)) badRequest("Reply-To is not a valid address");
+    if (replyTo && !isValidEmail(replyTo)) badRequest("err.replyTo.invalid");
 
     await saveSettings({
       smtpHost: optionalStr(body.smtpHost, "SMTP host", 253),

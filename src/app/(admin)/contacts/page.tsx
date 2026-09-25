@@ -1,15 +1,16 @@
 import ContactsTable from "@/components/ContactsTable";
+import { getLocale } from "@/i18n/server";
+import { translate } from "@/i18n/translate";
 
 export const dynamic = "force-dynamic";
 
-export default function ContactsPage() {
+export default async function ContactsPage() {
+  const locale = await getLocale();
   return (
     <div className="grid gap-5">
       <div>
-        <h1 className="text-xl font-semibold">Contacts</h1>
-        <p className="hint mt-1">
-          Every contact you know, across all lists. Deleting here removes the contact from every list.
-        </p>
+        <h1 className="text-xl font-semibold">{translate(locale, "nav.contacts")}</h1>
+        <p className="hint mt-1">{translate(locale, "contacts.intro")}</p>
       </div>
       <ContactsTable />
     </div>

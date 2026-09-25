@@ -13,7 +13,7 @@ export async function PATCH(request: Request, ctx: Ctx) {
     const body = await readJson<{ email?: string; firstName?: string; lastName?: string }>(request);
 
     const email = str(body.email, "Email", { max: 254 });
-    if (!isValidEmail(email)) badRequest("That is not a valid email address");
+    if (!isValidEmail(email)) badRequest("err.email.invalid");
 
     try {
       const rows = await db
@@ -27,11 +27,11 @@ export async function PATCH(request: Request, ctx: Ctx) {
         })
         .where(eq(contacts.id, id))
         .returning();
-      if (!rows[0]) notFound("Contact not found");
+      if (!rows[0]) notFound("err.contact.notFound");
       return NextResponse.json({ contact: rows[0] });
     } catch (error) {
       if (String(error).includes("contacts_email_normalized_key")) {
-        conflict("Another contact already uses that email address");
+        conflict("err.contact.duplicate");
       }
       throw error;
     }
@@ -42,7 +42,7 @@ export async function DELETE(_request: Request, ctx: Ctx) {
   return withAuthMutation(async () => {
     const { id } = await ctx.params;
     const rows = await db.delete(contacts).where(eq(contacts.id, id)).returning({ id: contacts.id });
-    if (!rows[0]) notFound("Contact not found");
+    if (!rows[0]) notFound("err.contact.notFound");
     return NextResponse.json({ ok: true });
   });
 }

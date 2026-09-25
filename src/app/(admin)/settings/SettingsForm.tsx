@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { Alert, api } from "@/components/ui";
+import { useT, type Translator } from "@/i18n/client";
+import { Rich } from "@/i18n/rich";
 import type { PublicSettings } from "@/lib/settings";
 
 const PRESETS: Record<string, { host: string; port: number; security: "starttls" | "tls" }> = {
@@ -10,16 +12,13 @@ const PRESETS: Record<string, { host: string; port: number; security: "starttls"
 };
 
 /** Warns that an environment variable makes the field below inert. */
-function overrideNote(overridden: Set<string>, field: string) {
+function overrideNote(t: Translator["t"], overridden: Set<string>, field: string) {
   if (!overridden.has(field)) return null;
-  return (
-    <p className="hint mt-1 text-amber-700 dark:text-amber-400">
-      Overridden by an environment variable — this value is ignored until that variable is removed.
-    </p>
-  );
+  return <p className="hint mt-1 text-amber-700 dark:text-amber-400">{t("settings.overrideNote")}</p>;
 }
 
 export default function SettingsForm({ initial }: { initial: PublicSettings }) {
+  const { t } = useT();
   const [form, setForm] = useState({
     smtpHost: initial.smtpHost ?? "",
     smtpPort: initial.smtpPort ?? 587,
@@ -58,9 +57,9 @@ export default function SettingsForm({ initial }: { initial: PublicSettings }) {
       });
       setPasswordSet(saved.smtpPasswordSet);
       setForm((f) => ({ ...f, smtpPassword: "" }));
-      setStatus({ kind: "success", text: "Settings saved." });
+      setStatus({ kind: "success", text: t("settings.saved") });
     } catch (error) {
-      setStatus({ kind: "error", text: error instanceof Error ? error.message : "Save failed" });
+      setStatus({ kind: "error", text: error instanceof Error ? error.message : t("common.saveFailed") });
     } finally {
       setBusy(null);
     }
@@ -76,7 +75,7 @@ export default function SettingsForm({ initial }: { initial: PublicSettings }) {
       });
       setStatus({ kind: "success", text: result.message });
     } catch (error) {
-      setStatus({ kind: "error", text: error instanceof Error ? error.message : "Test failed" });
+      setStatus({ kind: "error", text: error instanceof Error ? error.message : t("settings.testFailed") });
     } finally {
       setBusy(null);
     }
@@ -88,15 +87,13 @@ export default function SettingsForm({ initial }: { initial: PublicSettings }) {
 
       {initial.envOverrides.length > 0 ? (
         <Alert kind="info">
-          Some settings come from environment variables and take precedence over anything saved here:{" "}
-          <strong>{initial.envOverrides.join(", ")}</strong>. Editing them below has no effect until the
-          variables are removed.
+          <Rich text={t("settings.envOverride", { names: initial.envOverrides.join(", ") })} />
         </Alert>
       ) : null}
 
       <section className="card p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="font-medium">SMTP server</h2>
+          <h2 className="font-medium">{t("settings.smtp.title")}</h2>
           <div className="flex flex-wrap gap-1">
             {Object.entries(PRESETS).map(([label, preset]) => (
               <button key={label} type="button" className="btn px-2 py-1 text-xs"
@@ -111,63 +108,63 @@ export default function SettingsForm({ initial }: { initial: PublicSettings }) {
 
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="label" htmlFor="host">Hostname</label>
+            <label className="label" htmlFor="host">{t("settings.smtp.host")}</label>
             <input id="host" className="input" value={form.smtpHost} placeholder="smtp-pulse.com"
               onChange={(e) => set("smtpHost", e.target.value)} />
-            {overrideNote(overridden, "smtpHost")}
+            {overrideNote(t, overridden, "smtpHost")}
           </div>
           <div>
-            <label className="label" htmlFor="port">Port</label>
+            <label className="label" htmlFor="port">{t("settings.smtp.port")}</label>
             <input id="port" className="input" type="number" min={1} max={65535} value={form.smtpPort}
               onChange={(e) => set("smtpPort", Number(e.target.value))} />
-            {overrideNote(overridden, "smtpPort")}
+            {overrideNote(t, overridden, "smtpPort")}
           </div>
           <div>
-            <label className="label" htmlFor="security">Encryption</label>
+            <label className="label" htmlFor="security">{t("settings.smtp.encryption")}</label>
             <select id="security" className="input" value={form.smtpSecurity}
               onChange={(e) => set("smtpSecurity", e.target.value as typeof form.smtpSecurity)}>
-              <option value="starttls">STARTTLS (usually port 587)</option>
-              <option value="tls">TLS/SSL (usually port 465)</option>
-              <option value="none">None (unencrypted)</option>
+              <option value="starttls">{t("settings.smtp.starttls")}</option>
+              <option value="tls">{t("settings.smtp.tls")}</option>
+              <option value="none">{t("settings.smtp.none")}</option>
             </select>
           </div>
           <div>
-            <label className="label" htmlFor="user">Username</label>
+            <label className="label" htmlFor="user">{t("settings.smtp.username")}</label>
             <input id="user" className="input" autoComplete="off" value={form.smtpUser}
               onChange={(e) => set("smtpUser", e.target.value)} />
-            {overrideNote(overridden, "smtpUser")}
+            {overrideNote(t, overridden, "smtpUser")}
           </div>
           <div className="sm:col-span-2">
-            <label className="label" htmlFor="password">Password</label>
+            <label className="label" htmlFor="password">{t("login.password")}</label>
             <input id="password" className="input" type="password" autoComplete="new-password"
-              placeholder={passwordSet ? "•••••••• (stored — leave blank to keep)" : "SMTP password"}
+              placeholder={passwordSet ? t("settings.smtp.passwordStored") : t("settings.smtp.passwordPlaceholder")}
               value={form.smtpPassword} onChange={(e) => set("smtpPassword", e.target.value)} />
             <p className="hint mt-1">
-              Encrypted with AES-256-GCM before it is stored and never sent back to the browser.
-              {passwordSet ? " A password is currently stored." : ""}
+              {t("settings.smtp.passwordHint")}
+              {passwordSet ? t("settings.smtp.passwordCurrent") : ""}
             </p>
-            {overrideNote(overridden, "smtpPassword")}
+            {overrideNote(t, overridden, "smtpPassword")}
           </div>
         </div>
       </section>
 
       <section className="card p-4">
-        <h2 className="font-medium">Sender</h2>
+        <h2 className="font-medium">{t("settings.sender.title")}</h2>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div>
-            <label className="label" htmlFor="fromEmail">Sender email</label>
+            <label className="label" htmlFor="fromEmail">{t("settings.sender.email")}</label>
             <input id="fromEmail" className="input" type="email" value={form.fromEmail}
               onChange={(e) => set("fromEmail", e.target.value)} />
-            <p className="hint mt-1">Must be a sender address your SMTP provider has verified.</p>
-            {overrideNote(overridden, "fromEmail")}
+            <p className="hint mt-1">{t("settings.sender.emailHint")}</p>
+            {overrideNote(t, overridden, "fromEmail")}
           </div>
           <div>
-            <label className="label" htmlFor="fromName">Display name</label>
+            <label className="label" htmlFor="fromName">{t("settings.sender.name")}</label>
             <input id="fromName" className="input" value={form.fromName}
               onChange={(e) => set("fromName", e.target.value)} />
           </div>
           <div className="sm:col-span-2">
-            <label className="label" htmlFor="replyTo">Reply-To (optional)</label>
+            <label className="label" htmlFor="replyTo">{t("settings.sender.replyTo")}</label>
             <input id="replyTo" className="input" type="email" value={form.replyTo}
               onChange={(e) => set("replyTo", e.target.value)} />
           </div>
@@ -175,41 +172,38 @@ export default function SettingsForm({ initial }: { initial: PublicSettings }) {
       </section>
 
       <section className="card p-4">
-        <h2 className="font-medium">Sending rate</h2>
+        <h2 className="font-medium">{t("settings.rate.title")}</h2>
         <div className="mt-4 max-w-xs">
-          <label className="label" htmlFor="rate">Maximum emails per hour</label>
+          <label className="label" htmlFor="rate">{t("settings.rate.max")}</label>
           <input id="rate" className="input" type="number" min={1} max={1000000}
             value={form.maxEmailsPerHour}
             onChange={(e) => set("maxEmailsPerHour", Number(e.target.value))} />
-          <p className="hint mt-1">
-            SendPulse allows roughly 5,000 SMTP emails per hour. The worker sends slightly below this
-            ceiling as a safety margin, and counts a rolling hour rather than resetting on the clock.
-          </p>
-          {overrideNote(overridden, "maxEmailsPerHour")}
+          <p className="hint mt-1">{t("settings.rate.hint")}</p>
+          {overrideNote(t, overridden, "maxEmailsPerHour")}
         </div>
       </section>
 
       <section className="card p-4">
-        <h2 className="font-medium">Test</h2>
+        <h2 className="font-medium">{t("settings.test.title")}</h2>
         <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
           <div className="flex-1">
-            <label className="label" htmlFor="testTo">Send a test email to</label>
+            <label className="label" htmlFor="testTo">{t("settings.test.sendTo")}</label>
             <input id="testTo" className="input" type="email" placeholder="you@example.com"
               value={testTo} onChange={(e) => setTestTo(e.target.value)} />
           </div>
           <button type="button" className="btn" disabled={busy !== null} onClick={() => test("verify")}>
-            {busy === "verify" ? "Checking…" : "Test connection"}
+            {busy === "verify" ? t("settings.test.checking") : t("settings.test.connection")}
           </button>
           <button type="button" className="btn" disabled={busy !== null || !testTo} onClick={() => test("send")}>
-            {busy === "send" ? "Sending…" : "Send test email"}
+            {busy === "send" ? t("settings.test.sending") : t("settings.test.send")}
           </button>
         </div>
-        <p className="hint mt-2">Save your changes first — tests use the stored settings.</p>
+        <p className="hint mt-2">{t("settings.test.saveFirst")}</p>
       </section>
 
       <div>
         <button className="btn btn-primary" type="submit" disabled={busy !== null}>
-          {busy === "save" ? "Saving…" : "Save settings"}
+          {busy === "save" ? t("common.saving") : t("settings.save")}
         </button>
       </div>
     </form>

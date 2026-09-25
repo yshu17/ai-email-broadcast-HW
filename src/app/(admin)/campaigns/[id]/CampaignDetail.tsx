@@ -5,6 +5,7 @@ import { useState } from "react";
 import CampaignWizard, { type CampaignDraft } from "./CampaignWizard";
 import CampaignReport from "./CampaignReport";
 import { StatusBadge } from "@/components/ui";
+import { useT } from "@/i18n/client";
 
 /**
  * A DRAFT campaign shows the composer wizard; anything further along shows the
@@ -13,12 +14,13 @@ import { StatusBadge } from "@/components/ui";
 export default function CampaignDetail({
   initial, initialListIds,
 }: { initial: CampaignDraft; initialListIds: string[] }) {
+  const { t } = useT();
   const [status, setStatus] = useState(initial.status);
 
   return (
     <div className="grid gap-5">
       <div>
-        <Link className="hint hover:underline" href="/campaigns">← All campaigns</Link>
+        <Link className="hint hover:underline" href="/campaigns">{t("campaigns.back")}</Link>
         <div className="mt-1 flex flex-wrap items-center gap-3">
           <h1 className="text-xl font-semibold">{initial.name}</h1>
           <StatusBadge status={status} />
@@ -30,6 +32,7 @@ export default function CampaignDetail({
           initial={initial}
           initialListIds={initialListIds}
           onQueued={() => setStatus("QUEUED")}
+          onScheduled={() => setStatus("SCHEDULED")}
         />
       ) : (
         <CampaignReport campaignId={initial.id} initialStatus={status} onStatusChange={setStatus} />

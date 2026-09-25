@@ -3,6 +3,7 @@ import { desc, eq, sql as raw } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { campaignRecipients, campaigns } from "@/lib/db/schema";
 import { optionalStr, readJson, str, withAuth, withAuthMutation } from "@/lib/api";
+import { estimateRecipients } from "@/lib/campaign-recipients";
 import { getSmtpConfig } from "@/lib/settings";
 
 export async function GET() {
@@ -14,6 +15,7 @@ export async function GET() {
         subject: campaigns.subject,
         status: campaigns.status,
         createdAt: campaigns.createdAt,
+        scheduledAt: campaigns.scheduledAt,
         startedAt: campaigns.startedAt,
         completedAt: campaigns.completedAt,
         totalRecipients: campaigns.totalRecipients,
@@ -28,7 +30,20 @@ export async function GET() {
       .groupBy(campaigns.id)
       .orderBy(desc(campaigns.createdAt));
 
-    return NextResponse.json({ campaigns: rows });
+    // A scheduled campaign has no recipients yet (its queue is built when it starts),
+    // so the list shows an estimate instead of a misleading zero. Everything else: null.
+    const scheduledIds = rows.filter((row) => row.status === "SCHEDULED").map((row) => row.id);
+    let estimates = new Map<string, number>();
+    try {
+      estimates = await estimateRecipients(scheduledIds);
+    } catch (error) {
+      // The estimate is a courtesy; never lose the whole list over it.
+      console.error("[api] could not estimate recipients for scheduled campaigns", error);
+    }
+
+    return NextResponse.json({
+      campaigns: rows.map((row) => ({ ...row, estimatedRecipients: estimates.get(row.id) ?? null })),
+    });
   });
 }
 

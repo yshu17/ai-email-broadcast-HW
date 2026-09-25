@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { Alert, EmptyState, Modal, Spinner, api, formatDate, useDebounced, useLoader } from "@/components/ui";
+import { Alert, EmptyState, Modal, Spinner, api, useDebounced, useLoader } from "@/components/ui";
+import { useT } from "@/i18n/client";
 
 export type ContactRow = {
   id: string;
@@ -16,6 +17,7 @@ export type ContactRow = {
  * membership; without one it manages the global address book.
  */
 export default function ContactsTable({ listId, reloadKey = 0 }: { listId?: string; reloadKey?: number }) {
+  const { t, formatDate } = useT();
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounced(search);
@@ -58,7 +60,7 @@ export default function ContactsTable({ listId, reloadKey = 0 }: { listId?: stri
       setForm({ email: "", firstName: "", lastName: "" });
       reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Save failed");
+      setError(err instanceof Error ? err.message : t("common.saveFailed"));
     } finally {
       setBusy(false);
     }
@@ -68,8 +70,8 @@ export default function ContactsTable({ listId, reloadKey = 0 }: { listId?: stri
     const ids = [...selected];
     if (ids.length === 0) return;
     const question = listId
-      ? `Remove ${ids.length} contact(s) from this list? They stay in your address book.`
-      : `Permanently delete ${ids.length} contact(s) from every list?`;
+      ? t("contacts.confirmRemoveFromList", { count: ids.length })
+      : t("contacts.confirmDeleteAll", { count: ids.length });
     if (!confirm(question)) return;
     try {
       await api("/api/contacts", {
@@ -78,7 +80,7 @@ export default function ContactsTable({ listId, reloadKey = 0 }: { listId?: stri
       });
       reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Delete failed");
+      setError(err instanceof Error ? err.message : t("common.deleteFailed"));
     }
   };
 
@@ -100,27 +102,29 @@ export default function ContactsTable({ listId, reloadKey = 0 }: { listId?: stri
       <div className="flex flex-wrap items-center gap-2">
         <input
           className="input max-w-xs"
-          placeholder="Search email or name…"
+          placeholder={t("contacts.searchPlaceholder")}
           value={search}
           onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-          aria-label="Search contacts"
+          aria-label={t("contacts.searchLabel")}
         />
         <button className="btn" onClick={() => { setForm({ email: "", firstName: "", lastName: "" }); setAdding(true); }}>
-          Add contact
+          {t("contacts.add")}
         </button>
         {selected.size > 0 ? (
           <button className="btn btn-danger" onClick={bulkDelete}>
-            {listId ? `Remove ${selected.size} from list` : `Delete ${selected.size}`}
+            {listId
+              ? t("contacts.removeFromList", { count: selected.size })
+              : t("contacts.deleteSelected", { count: selected.size })}
           </button>
         ) : null}
-        <span className="hint ml-auto tabular-nums">{total} contact{total === 1 ? "" : "s"}</span>
+        <span className="hint ml-auto tabular-nums">{t("contacts.total", { count: total })}</span>
       </div>
 
       {rows === null ? (
         <Spinner />
       ) : rows.length === 0 ? (
-        <EmptyState title={search ? "No matches" : "No contacts here yet"}>
-          {search ? "Try a different search." : "Add one manually, or import a batch."}
+        <EmptyState title={search ? t("contacts.noMatches") : t("contacts.none")}>
+          {search ? t("contacts.tryDifferent") : t("contacts.addOrImport")}
         </EmptyState>
       ) : (
         <div className="card overflow-x-auto">
@@ -128,15 +132,15 @@ export default function ContactsTable({ listId, reloadKey = 0 }: { listId?: stri
             <thead>
               <tr className="border-b text-left" style={{ color: "var(--color-muted)" }}>
                 <th className="w-10 px-3 py-2">
-                  <input type="checkbox" checked={allOnPageSelected} aria-label="Select all on page"
+                  <input type="checkbox" checked={allOnPageSelected} aria-label={t("contacts.selectAll")}
                     onChange={(e) =>
                       setSelected(e.target.checked ? new Set(rows.map((r) => r.id)) : new Set())
                     } />
                 </th>
-                <th className="px-3 py-2 font-medium">Email</th>
-                <th className="px-3 py-2 font-medium">First name</th>
-                <th className="px-3 py-2 font-medium">Last name</th>
-                <th className="hidden px-3 py-2 font-medium sm:table-cell">Added</th>
+                <th className="px-3 py-2 font-medium">{t("common.email")}</th>
+                <th className="px-3 py-2 font-medium">{t("common.firstName")}</th>
+                <th className="px-3 py-2 font-medium">{t("common.lastName")}</th>
+                <th className="hidden px-3 py-2 font-medium sm:table-cell">{t("contacts.col.added")}</th>
                 <th className="px-3 py-2" />
               </tr>
             </thead>
@@ -145,7 +149,7 @@ export default function ContactsTable({ listId, reloadKey = 0 }: { listId?: stri
                 <tr key={row.id} className="border-b last:border-0">
                   <td className="px-3 py-2">
                     <input type="checkbox" checked={selected.has(row.id)} onChange={() => toggle(row.id)}
-                      aria-label={`Select ${row.email}`} />
+                      aria-label={t("contacts.selectRow", { email: row.email })} />
                   </td>
                   <td className="px-3 py-2 break-all">{row.email}</td>
                   <td className="px-3 py-2">{row.firstName ?? "—"}</td>
@@ -159,7 +163,7 @@ export default function ContactsTable({ listId, reloadKey = 0 }: { listId?: stri
                         setEditing(row);
                         setForm({ email: row.email, firstName: row.firstName ?? "", lastName: row.lastName ?? "" });
                       }}>
-                      Edit
+                      {t("common.edit")}
                     </button>
                   </td>
                 </tr>
@@ -171,48 +175,48 @@ export default function ContactsTable({ listId, reloadKey = 0 }: { listId?: stri
 
       {pageCount > 1 ? (
         <div className="flex items-center justify-between">
-          <button className="btn" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Previous</button>
-          <span className="hint">Page {page} of {pageCount}</span>
-          <button className="btn" disabled={page >= pageCount} onClick={() => setPage((p) => p + 1)}>Next</button>
+          <button className="btn" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>{t("common.previous")}</button>
+          <span className="hint">{t("common.page", { page, pages: pageCount })}</span>
+          <button className="btn" disabled={page >= pageCount} onClick={() => setPage((p) => p + 1)}>{t("common.next")}</button>
         </div>
       ) : null}
 
       <Modal
         open={adding || editing !== null}
-        title={editing ? "Edit contact" : "Add contact"}
+        title={editing ? t("contacts.edit") : t("contacts.add")}
         onClose={() => { setAdding(false); setEditing(null); }}
       >
         <form onSubmit={submit} className="grid gap-3">
           <div>
-            <label className="label" htmlFor="cEmail">Email</label>
+            <label className="label" htmlFor="cEmail">{t("common.email")}</label>
             <input id="cEmail" className="input" type="email" required autoFocus value={form.email}
               onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} />
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <label className="label" htmlFor="cFirst">First name</label>
+              <label className="label" htmlFor="cFirst">{t("common.firstName")}</label>
               <input id="cFirst" className="input" value={form.firstName}
                 onChange={(e) => setForm((f) => ({ ...f, firstName: e.target.value }))} />
             </div>
             <div>
-              <label className="label" htmlFor="cLast">Last name</label>
+              <label className="label" htmlFor="cLast">{t("common.lastName")}</label>
               <input id="cLast" className="input" value={form.lastName}
                 onChange={(e) => setForm((f) => ({ ...f, lastName: e.target.value }))} />
             </div>
           </div>
           <div className="flex gap-2">
             <button className="btn btn-primary" type="submit" disabled={busy}>
-              {busy ? "Saving…" : "Save"}
+              {busy ? t("common.saving") : t("common.save")}
             </button>
             {editing ? (
               <button type="button" className="btn btn-danger"
                 onClick={async () => {
-                  if (!confirm("Delete this contact everywhere?")) return;
+                  if (!confirm(t("contacts.confirmDeleteOne"))) return;
                   await api(`/api/contacts/${editing.id}`, { method: "DELETE" });
                   setEditing(null);
                   reload();
                 }}>
-                Delete
+                {t("common.delete")}
               </button>
             ) : null}
           </div>

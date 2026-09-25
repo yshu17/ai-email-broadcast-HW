@@ -1,0 +1,357 @@
+import { plural, type Messages } from "../define";
+
+/**
+ * The words of the developer test panel itself (its sections, fields, buttons, messages and the
+ * journal's lines), in both languages. The help for each element is in `testhelp.ts`, and the
+ * tour and the scenarios in `testguide.ts`.
+ *
+ * Statuses, time-zone names and technical identifiers are shown as they are, or through the
+ * existing `status.*` words. Numbers a text needs (ranges, presets) arrive as placeholders.
+ *
+ * Every `plural()` call carries the `@__PURE__` annotation so a production build, which does not use this
+ * dictionary, can drop all of it (a call it cannot prove pure would keep part of it alive).
+ */
+export const testpanel = {
+  "tp.title": { en: "Test Panel", ru: "Тестовая панель" },
+  "tp.toggle": { en: "Test Panel", ru: "Тестовая панель" },
+  "tp.close": { en: "Close the test panel", ru: "Закрыть тестовую панель" },
+  "tp.error.generic": { en: "Something went wrong.", ru: "Что-то пошло не так." },
+  "tp.seconds": { en: "{seconds} s", ru: "{seconds} с" },
+  "tp.unit.seconds": { en: "seconds", ru: "секунд" },
+  "tp.unit.minutes": { en: "minutes", ru: "минут" },
+
+  "tp.banner.chip": { en: "TEST MODE", ru: "ТЕСТОВЫЙ РЕЖИМ" },
+  "tp.banner.text": {
+    en: "Developer test tools are on. Email goes only to the built-in test SMTP server.",
+    ru: "Инструменты разработчика включены. Письма уходят только на встроенный тестовый SMTP-сервер.",
+  },
+  "tp.banner.clock": { en: "Test time is held: {time}", ru: "Тестовое время зафиксировано: {time}" },
+  "tp.banner.rate": { en: "Test email limit: {max} per {seconds} s", ru: "Тестовый лимит писем: {max} за {seconds} с" },
+
+  "tp.section.clock": { en: "Test Clock", ru: "Тестовое время" },
+  "tp.section.scheduler": { en: "Scheduler", ru: "Планировщик" },
+  "tp.section.queue": { en: "Queue and Rate Limit", ru: "Очередь и rate limit" },
+  "tp.section.create": { en: "Create Test Campaign", ru: "Создать тестовую кампанию" },
+  "tp.section.campaigns": { en: "Test campaigns", ru: "Тестовые кампании" },
+  "tp.section.journal": { en: "Event journal", ru: "Журнал событий" },
+  "tp.section.guides": { en: "Scenarios", ru: "Сценарии" },
+
+  /* ------------------------------------------------------------ test clock */
+  "tp.clock.realNow": { en: "Real time", ru: "Реальное время" },
+  "tp.clock.effectiveNow": { en: "Application time", ru: "Время приложения" },
+  "tp.clock.userZone": { en: "Your time zone", ru: "Ваш часовой пояс" },
+  "tp.clock.mode": { en: "Mode", ru: "Режим" },
+  "tp.clock.modeReal": { en: "Real time", ru: "Реальное время" },
+  "tp.clock.modeFixed": { en: "Fixed test time", ru: "Фиксированное тестовое время" },
+  "tp.clock.modeLegend": { en: "Clock mode", ru: "Режим часов" },
+  "tp.clock.real": { en: "Real time", ru: "Реальное время" },
+  "tp.clock.fixed": { en: "Fixed test time", ru: "Фиксированное тестовое время" },
+  "tp.clock.date": { en: "Date", ru: "Дата" },
+  "tp.clock.time": { en: "Time", ru: "Время" },
+  "tp.clock.zone": { en: "Time zone", ru: "Часовой пояс" },
+  "tp.clock.preview": {
+    en: "It will be held at {utc} (UTC), which is {local} for you.",
+    ru: "Часы будут удержаны на {utc} (UTC), у вас это {local}.",
+  },
+  "tp.clock.set": { en: "Set", ru: "Задать" },
+  "tp.clock.step": { en: "Step", ru: "Шаг" },
+  "tp.clock.advance": { en: "Advance", ru: "Продвинуть" },
+  "tp.clock.reset": { en: "Reset to real time", ru: "Сбросить на реальное время" },
+  "tp.clock.setDone": { en: "The test clock is held at the time you set.", ru: "Тестовые часы зафиксированы на заданном времени." },
+  "tp.clock.advanceDone": { en: "The test clock moved forward.", ru: "Тестовые часы сдвинуты вперёд." },
+  "tp.clock.resetDone": { en: "The app follows the real clock again.", ru: "Приложение снова идёт по реальным часам." },
+  "tp.step.minute": { en: "1 minute", ru: "1 минута" },
+  "tp.step.fiveMinutes": { en: "5 minutes", ru: "5 минут" },
+  "tp.step.hour": { en: "1 hour", ru: "1 час" },
+  "tp.step.day": { en: "1 day", ru: "1 день" },
+
+  /* ------------------------------------------------------------- scheduler */
+  "tp.sched.state": { en: "State", ru: "Состояние" },
+  "tp.sched.running": { en: "Running", ru: "Работает" },
+  "tp.sched.stopped": { en: "Stopped", ru: "Остановлен" },
+  "tp.sched.lastCycle": { en: "Last cycle", ru: "Последний цикл" },
+  "tp.sched.lastCycleValue": { en: "{time} ({ms} ms)", ru: "{time} ({ms} мс)" },
+  "tp.sched.nextCycle": { en: "Next cycle", ru: "Следующий цикл" },
+  "tp.sched.due": { en: "Due campaigns found", ru: "Найдено готовых кампаний" },
+  "tp.sched.result": { en: "Last result", ru: "Результат" },
+  "tp.sched.resultValue": {
+    en: "started {started} · claimed {claimed} · sent {sent} · failed {failed} · retried {retried}",
+    ru: "запущено {started} · взято {claimed} · отправлено {sent} · ошибок {failed} · на повтор {retried}",
+  },
+  "tp.sched.error": { en: "Last error", ru: "Последняя ошибка" },
+  "tp.sched.interval": { en: "Scheduler interval", ru: "Интервал планировщика" },
+  "tp.sched.intervalHint": { en: "From {min} to {max} seconds", ru: "От {min} до {max} секунд" },
+  "tp.sched.intervalDone": { en: "Interval saved.", ru: "Интервал сохранён." },
+  "tp.sched.start": { en: "Start", ru: "Старт" },
+  "tp.sched.stop": { en: "Stop", ru: "Стоп" },
+  "tp.sched.runNow": { en: "Run now", ru: "Запустить сейчас" },
+  "tp.sched.startDone": { en: "The scheduler is running.", ru: "Планировщик работает." },
+  "tp.sched.stopDone": {
+    en: "The scheduler is stopped. No campaign changed.",
+    ru: "Планировщик остановлен. Ни одна кампания не изменилась.",
+  },
+  "tp.sched.runDone": {
+    en: "One cycle ran: {due} due, {started} started.",
+    ru: "Выполнен один цикл: готовых — {due}, запущено — {started}.",
+  },
+  "tp.sched.runBusy": {
+    en: "A cycle is already running; nothing new was started.",
+    ru: "Цикл уже идёт; ничего нового не запущено.",
+  },
+  "tp.sched.runFailed": {
+    en: "The cycle ran but reported an error; see Last error.",
+    ru: "Цикл выполнен, но сообщил об ошибке; см. «Последняя ошибка».",
+  },
+
+  /* ------------------------------------------------------ queue and limit */
+  "tp.queue.state": { en: "Queue state", ru: "Состояние очереди" },
+  "tp.queue.state.idle": { en: "Idle", ru: "Простой" },
+  "tp.queue.state.waiting": { en: "Waiting", ru: "Ожидание" },
+  "tp.queue.state.sending": { en: "Sending", ru: "Отправка" },
+  "tp.queue.state.limited": { en: "Limited by the rate limit", ru: "Ограничено rate limit" },
+  "tp.queue.waiting": { en: "Waiting jobs", ru: "Ожидающие задания" },
+  "tp.queue.active": { en: "Active jobs", ru: "Активные задания" },
+  "tp.queue.done": { en: "Completed jobs", ru: "Выполненные задания" },
+  "tp.queue.failed": { en: "Failed jobs", ru: "Ошибочные задания" },
+  "tp.rate.current": { en: "Current limit", ru: "Текущий лимит" },
+  .../* @__PURE__ */ plural(
+    "tp.rate.currentValue",
+    { one: "{count} email per {seconds} s", other: "{count} emails per {seconds} s" },
+    {
+      one: "{count} письмо за {seconds} с", few: "{count} письма за {seconds} с",
+      many: "{count} писем за {seconds} с", other: "{count} писем за {seconds} с",
+    },
+  ),
+  "tp.rate.testTag": { en: "test", ru: "тест" },
+  "tp.rate.window": { en: "Window length", ru: "Длина окна" },
+  "tp.rate.sent": { en: "Sent in this window", ru: "Отправлено в этом окне" },
+  "tp.smtp.label": { en: "Test SMTP server", ru: "Тестовый SMTP-сервер" },
+  "tp.smtp.value": { en: "port {port} · accepted {accepted}", ru: "порт {port} · принято {accepted}" },
+  "tp.smtp.folder": { en: "Messages are saved in: {folder}", ru: "Письма сохраняются в: {folder}" },
+  "tp.rate.formulaTitle": { en: "Rate formula", ru: "Формула скорости" },
+  "tp.rate.formula": {
+    en: "Rate (emails per second) = {max} / {seconds} s = {rate}",
+    ru: "Скорость (писем в секунду) = {max} / {seconds} с = {rate}",
+  },
+  "tp.rate.formulaEmpty": { en: "Enter both numbers to see the rate.", ru: "Введите оба числа, чтобы увидеть скорость." },
+  "tp.rate.maxEmails": { en: "Max emails", ru: "Макс. писем" },
+  "tp.rate.interval": { en: "Interval", ru: "Интервал" },
+  "tp.rate.presets": { en: "Rate limit presets", ru: "Готовые наборы лимита" },
+  "tp.rate.preset": { en: "Emails: {maxEmails} / {seconds} s", ru: "Писем: {maxEmails} / {seconds} с" },
+  "tp.rate.apply": { en: "Apply", ru: "Применить" },
+  "tp.rate.reset": { en: "Reset to defaults", ru: "Сбросить на стандартные" },
+  "tp.rate.applyDone": {
+    en: "The test limit is set. The queue reads it on the next cycle.",
+    ru: "Тестовый лимит задан. Очередь прочитает его в следующем цикле.",
+  },
+  "tp.rate.resetDone": { en: "Back to the configured limit.", ru: "Возвращён настроенный лимит." },
+
+  /* ------------------------------------------------------- create campaign */
+  "tp.create.templates": { en: "Templates", ru: "Шаблоны" },
+  "tp.template.in1min": { en: "Starts in {minutes} min", ru: "Запуск через {minutes} мин" },
+  "tp.template.in5min": { en: "Starts in {minutes} min", ru: "Запуск через {minutes} мин" },
+  "tp.template.overdue5min": { en: "Overdue by {minutes} min", ru: "Просрочена на {minutes} мин" },
+  "tp.template.bigRate": { en: "Large campaign for the rate limit", ru: "Большая кампания для rate limit" },
+  "tp.template.tempFail": { en: "Temporary SMTP failure", ru: "Временная ошибка SMTP" },
+  "tp.template.permFail": { en: "Permanent SMTP failure", ru: "Постоянная ошибка SMTP" },
+  "tp.template.slowSmtp": { en: "Slow SMTP", ru: "Медленный SMTP" },
+  "tp.create.name": { en: "Campaign name", ru: "Название" },
+  "tp.create.namePlaceholder": { en: "Automatic", ru: "Автоматическое" },
+  "tp.create.recipients": { en: "Recipients", ru: "Получатели" },
+  "tp.create.mode": { en: "How to send", ru: "Способ отправки" },
+  "tp.mode.now": { en: "Send now", ru: "Отправить сейчас" },
+  "tp.mode.schedule": { en: "Schedule", ru: "Запланировать" },
+  "tp.mode.overdue": { en: "Already overdue (test only)", ru: "Уже просрочена (только для тестов)" },
+  "tp.create.date": { en: "Start date", ru: "Дата запуска" },
+  "tp.create.time": { en: "Start time", ru: "Время запуска" },
+  "tp.create.zone": { en: "Time zone", ru: "Часовой пояс" },
+  "tp.create.overdue": { en: "Overdue by", ru: "Просрочена на" },
+  "tp.create.scenario": { en: "SMTP scenario", ru: "Сценарий SMTP" },
+  "tp.scenario.success": { en: "Success", ru: "Успех" },
+  "tp.scenario.tempfail": { en: "Temporary failure", ru: "Временная ошибка" },
+  "tp.scenario.permfail": { en: "Permanent failure", ru: "Постоянная ошибка" },
+  "tp.scenario.slow": { en: "Slow response", ru: "Медленный ответ" },
+  "tp.create.slowDelay": { en: "Response delay", ru: "Задержка ответа" },
+  "tp.create.tempFailures": { en: "Temporary failures", ru: "Число временных ошибок" },
+  "tp.create.submit": { en: "Create test campaign", ru: "Создать тестовую кампанию" },
+  "tp.create.done": { en: "Test campaign “{name}” created.", ru: "Тестовая кампания «{name}» создана." },
+
+  /* ------------------------------------------------------ selected campaign */
+  "tp.campaigns.none": {
+    en: "No test campaigns yet. Create one above.",
+    ru: "Тестовых кампаний пока нет. Создайте одну выше.",
+  },
+  "tp.campaigns.select": { en: "Test campaign", ru: "Тестовая кампания" },
+  "tp.campaigns.status": { en: "Status", ru: "Статус" },
+  "tp.campaigns.utc": { en: "scheduledAt (UTC)", ru: "scheduledAt (UTC)" },
+  "tp.campaigns.local": { en: "In your time zone", ru: "В вашем часовом поясе" },
+  "tp.campaigns.counts": { en: "Queue", ru: "Очередь" },
+  "tp.campaigns.countsValue": {
+    en: "waiting {queued} · sending {sending} · sent {sent} · failed {failed}",
+    ru: "ждут {queued} · отправляются {sending} · отправлено {sent} · ошибок {failed}",
+  },
+  "tp.campaigns.open": { en: "Open campaign", ru: "Открыть кампанию" },
+  "tp.campaigns.runCycle": { en: "Run cycle", ru: "Выполнить цикл" },
+  "tp.campaigns.reschedule": { en: "Change time", ru: "Изменить время" },
+  "tp.campaigns.cancel": { en: "Cancel", ru: "Отменить" },
+  "tp.campaigns.showQueue": { en: "Queue rows", ru: "Записи очереди" },
+  "tp.campaigns.hideQueue": { en: "Hide queue rows", ru: "Скрыть записи очереди" },
+  "tp.campaigns.showHistory": { en: "Status history", ru: "История статусов" },
+  "tp.campaigns.hideHistory": { en: "Hide history", ru: "Скрыть историю" },
+  "tp.campaigns.refresh": { en: "Refresh", ru: "Обновить" },
+  "tp.campaigns.reset": { en: "Reset campaign", ru: "Сбросить кампанию" },
+  "tp.campaigns.queueCaption": { en: "Queue rows of the selected campaign", ru: "Записи очереди выбранной кампании" },
+  "tp.campaigns.historyCaption": { en: "Status history of the selected campaign", ru: "История статусов выбранной кампании" },
+  "tp.queueRows.address": { en: "Address", ru: "Адрес" },
+  "tp.queueRows.status": { en: "Status", ru: "Статус" },
+  "tp.queueRows.attempts": { en: "Attempts", ru: "Попытки" },
+  "tp.queueRows.next": { en: "Next attempt", ru: "След. попытка" },
+  "tp.queueRows.error": { en: "Last error", ru: "Последняя ошибка" },
+  "tp.queueRows.empty": {
+    en: "No rows yet: a scheduled campaign gets its queue when it starts.",
+    ru: "Записей пока нет: очередь у запланированной кампании появляется при старте.",
+  },
+  "tp.reset.title": { en: "Reset test campaign?", ru: "Сбросить тестовую кампанию?" },
+  "tp.reset.body": {
+    en: "“{name}”, the list made for it and the made-up contacts nothing else uses will be deleted. Real campaigns are not touched. This cannot be undone.",
+    ru: "Будут удалены «{name}», созданный для неё список и выдуманные контакты, которые больше нигде не используются. Настоящие кампании не затрагиваются. Это нельзя отменить.",
+  },
+  "tp.reset.confirm": { en: "Reset", ru: "Сбросить" },
+  "tp.reset.working": { en: "Resetting…", ru: "Сброс…" },
+  "tp.reset.done": {
+    en: "“{name}” was reset. Made-up contacts removed: {contacts}.",
+    ru: "«{name}» сброшена. Удалено выдуманных контактов: {contacts}.",
+  },
+
+  /* ---------------------------------------------------------------- journal */
+  "tp.journal.entries": { en: "Events", ru: "События" },
+  .../* @__PURE__ */ plural(
+    "tp.journal.count",
+    { one: "{count} event", other: "{count} events" },
+    { one: "{count} событие", few: "{count} события", many: "{count} событий", other: "{count} события" },
+  ),
+  "tp.journal.limit": { en: "Shown at most", ru: "Показывается не более" },
+  "tp.journal.limitValue": { en: "{show} latest", ru: "{show} последних" },
+  "tp.journal.refresh": { en: "Refresh", ru: "Обновить" },
+  "tp.journal.auto": { en: "Refresh automatically", ru: "Обновлять автоматически" },
+  "tp.journal.clear": { en: "Clear view", ru: "Очистить вид" },
+  "tp.journal.empty": {
+    en: "Nothing here yet. Events appear as the scheduler and the queue work.",
+    ru: "Пока пусто. События появляются по мере работы планировщика и очереди.",
+  },
+  "tp.journal.label": { en: "Recent events", ru: "Последние события" },
+  "tp.journal.testTime": { en: "test time {time}", ru: "тестовое время {time}" },
+  "tp.source.api": { en: "API", ru: "API" },
+  "tp.source.scheduler": { en: "Scheduler", ru: "Планировщик" },
+  "tp.source.queue": { en: "Queue", ru: "Очередь" },
+  "tp.source.rate-limiter": { en: "Rate limiter", ru: "Rate limiter" },
+  "tp.source.smtp": { en: "Test SMTP", ru: "Тест. SMTP" },
+  "tp.source.panel": { en: "Panel", ru: "Панель" },
+  "tp.trigger.worker": { en: "worker", ru: "воркер" },
+  "tp.trigger.panel-loop": { en: "test scheduler", ru: "тестовый планировщик" },
+  "tp.trigger.run-now": { en: "Run now", ru: "«Запустить сейчас»" },
+
+  "tp.event.unknown": { en: "Event: {type}", ru: "Событие: {type}" },
+  "tp.event.campaign.created": { en: "Campaign “{name}” created as {to}", ru: "Кампания «{name}» создана как «{to}»" },
+  "tp.event.campaign.scheduled": { en: "Campaign “{name}” scheduled for {when}", ru: "Кампания «{name}» запланирована на {when}" },
+  "tp.event.campaign.queued": {
+    en: "Campaign “{name}” queued: {recipients} recipients",
+    ru: "Кампания «{name}» поставлена в очередь: получателей — {recipients}",
+  },
+  "tp.event.campaign.rescheduled": { en: "Campaign “{name}” moved to {when}", ru: "Кампания «{name}» перенесена на {when}" },
+  "tp.event.campaign.cancelled.user": {
+    en: "Campaign “{name}” cancelled: {from} → {to}",
+    ru: "Кампания «{name}» отменена: «{from}» → «{to}»",
+  },
+  "tp.event.campaign.cancelled.noRecipients": {
+    en: "Campaign “{name}” cancelled: nobody left to send to",
+    ru: "Кампания «{name}» отменена: отправлять некому",
+  },
+  "tp.event.campaign.activated": {
+    en: "Campaign “{name}” moved from {from} to {to}",
+    ru: "Кампания «{name}» перешла из «{from}» в «{to}»",
+  },
+  "tp.event.campaign.started": {
+    en: "Campaign “{name}” moved from {from} to {to}",
+    ru: "Кампания «{name}» перешла из «{from}» в «{to}»",
+  },
+  "tp.event.campaign.completed": { en: "Campaign “{name}” completed", ru: "Кампания «{name}» завершена" },
+  "tp.event.campaign.recovered": {
+    en: "Campaign “{name}” repaired: {recipients} recipient jobs created",
+    ru: "Кампания «{name}» восстановлена: создано заданий — {recipients}",
+  },
+  "tp.event.recipients.created": { en: "Recipient jobs created: {count}", ru: "Созданы задания получателей: {count}" },
+  "tp.event.scheduler.cycle.started": {
+    en: "Scheduler cycle {cycle} started ({trigger})",
+    ru: "Цикл планировщика {cycle} начат ({trigger})",
+  },
+  "tp.event.scheduler.cycle.finished": {
+    en: "Scheduler cycle {cycle} finished: due {due}, started {activated}, sent {sent}, failed {failed}, retried {retried}",
+    ru: "Цикл планировщика {cycle} завершён: готово {due}, запущено {activated}, отправлено {sent}, ошибок {failed}, на повтор {retried}",
+  },
+  "tp.event.scheduler.cycle.failed": {
+    en: "Scheduler cycle {cycle} failed",
+    ru: "Цикл планировщика {cycle} завершился ошибкой",
+  },
+  "tp.event.scheduler.activation.failed": {
+    en: "Campaign “{name}” could not be started; it will be tried again next cycle",
+    ru: "Кампанию «{name}» не удалось запустить; будет повторная попытка в следующем цикле",
+  },
+  .../* @__PURE__ */ plural(
+    "tp.event.rate.allowed",
+    {
+      one: "Rate limiter allowed {count} email (limit {maxEmails} per {windowSeconds} s)",
+      other: "Rate limiter allowed {count} emails (limit {maxEmails} per {windowSeconds} s)",
+    },
+    {
+      one: "Rate limiter разрешил {count} письмо (лимит {maxEmails} за {windowSeconds} с)",
+      few: "Rate limiter разрешил {count} письма (лимит {maxEmails} за {windowSeconds} с)",
+      many: "Rate limiter разрешил {count} писем (лимит {maxEmails} за {windowSeconds} с)",
+      other: "Rate limiter разрешил {count} письма (лимит {maxEmails} за {windowSeconds} с)",
+    },
+  ),
+  "tp.event.rate.limited": {
+    en: "Rate limit reached: {sent} sent, limit {maxEmails} per {windowSeconds} s; the queue waits",
+    ru: "Достигнут rate limit: отправлено {sent}, лимит {maxEmails} за {windowSeconds} с; очередь ждёт",
+  },
+  "tp.event.mail.batch": {
+    en: "Batch done: sent {sent}, failed {failed}, retried {retried}",
+    ru: "Пачка обработана: отправлено {sent}, ошибок {failed}, на повтор {retried}",
+  },
+  "tp.event.smtp.accepted": { en: "Test SMTP accepted an email ({scenario})", ru: "Тестовый SMTP принял письмо ({scenario})" },
+  "tp.event.test.clock.set": { en: "Test clock held at {when}", ru: "Тестовые часы зафиксированы на {when}" },
+  "tp.event.test.clock.advanced": { en: "Test clock advanced to {when}", ru: "Тестовые часы сдвинуты до {when}" },
+  "tp.event.test.clock.reset": { en: "Test clock reset to real time", ru: "Тестовые часы сброшены на реальное время" },
+  "tp.event.test.scheduler.started": { en: "Test scheduler started", ru: "Тестовый планировщик запущен" },
+  "tp.event.test.scheduler.stopped": { en: "Test scheduler stopped", ru: "Тестовый планировщик остановлен" },
+  "tp.event.test.scheduler.interval": {
+    en: "Test scheduler interval set to {seconds} s",
+    ru: "Интервал тестового планировщика: {seconds} с",
+  },
+  "tp.event.test.rate.applied": {
+    en: "Test rate limit set: {maxEmails} per {windowSeconds} s",
+    ru: "Тестовый лимит задан: {maxEmails} за {windowSeconds} с",
+  },
+  "tp.event.test.rate.reset": {
+    en: "Test rate limit reset to the configured one",
+    ru: "Тестовый лимит сброшен на настроенный",
+  },
+  "tp.event.test.campaign.reset": {
+    en: "Test campaign reset; made-up contacts removed: {contacts}",
+    ru: "Тестовая кампания сброшена; удалено выдуманных контактов: {contacts}",
+  },
+  "tp.event.row.created": { en: "Campaign created (draft)", ru: "Кампания создана (черновик)" },
+  "tp.event.row.started": { en: "Campaign started sending", ru: "Кампания начала отправку" },
+  "tp.event.row.completed": { en: "Campaign finished: {to}", ru: "Кампания завершена: «{to}»" },
+
+  /* ------------------------------------------------------------- scenarios */
+  "tp.guide.intro": {
+    en: "Ready-made ways to test one thing at a time. They only explain: nothing changes until you press a button yourself.",
+    ru: "Готовые способы проверить по одному сценарию. Они только объясняют: ничего не меняется, пока вы сами не нажмёте кнопку.",
+  },
+  "tp.guide.setup": { en: "Start with", ru: "С чего начать" },
+  "tp.guide.steps": { en: "Do this", ru: "Что делать" },
+  "tp.guide.statuses": { en: "Expect these statuses", ru: "Ожидаемые статусы" },
+  "tp.guide.jobs": { en: "Expect this many jobs", ru: "Ожидаемое число заданий" },
+  "tp.guide.reset": { en: "Put it back", ru: "Как вернуть всё обратно" },
+} satisfies Messages;

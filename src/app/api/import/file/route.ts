@@ -19,10 +19,10 @@ type Body = {
 export async function POST(request: Request) {
   return withAuthMutation(async () => {
     const body = (await request.json().catch(() => null)) as Body | null;
-    if (!body?.content) badRequest("Nothing to import");
+    if (!body?.content) badRequest("err.import.nothing");
 
     const content = body.content;
-    if (Buffer.byteLength(content, "utf8") > MAX_UPLOAD_BYTES) badRequest("File is too large");
+    if (Buffer.byteLength(content, "utf8") > MAX_UPLOAD_BYTES) badRequest("err.import.tooLarge");
 
     let rows: ImportRow[];
     let invalidCount = 0;
@@ -38,7 +38,7 @@ export async function POST(request: Request) {
         body.delimiter === ";" || body.delimiter === "\t" ? body.delimiter : ",";
       const mapping = Array.isArray(body.mapping) ? body.mapping : [];
       const emailIndex = mapping.indexOf("email");
-      if (emailIndex === -1) badRequest("Map one column to Email — it is mandatory");
+      if (emailIndex === -1) badRequest("err.import.emailColumn");
 
       const firstIndex = mapping.indexOf("firstName");
       const lastIndex = mapping.indexOf("lastName");
@@ -46,7 +46,7 @@ export async function POST(request: Request) {
       const parsed = parseCsv(content, delimiter);
       const dataRows = body.hasHeader ? parsed.slice(1) : parsed;
       if (dataRows.length > MAX_IMPORT_ROWS) {
-        badRequest(`That file has ${dataRows.length} rows; the limit is ${MAX_IMPORT_ROWS}`);
+        badRequest("err.import.tooManyRows", { rows: dataRows.length, limit: MAX_IMPORT_ROWS });
       }
 
       rows = dataRows.map((cells) => ({

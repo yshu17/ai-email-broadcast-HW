@@ -1,8 +1,18 @@
-import { eq, inArray } from "drizzle-orm";
-import { db, sql } from "./db";
-import { campaignLists, campaignRecipients, campaigns, contactListMembers, contacts } from "./db/schema";
+import { and, count, countDistinct, eq, inArray, notExists } from "drizzle-orm";
+import type { PgDatabase } from "drizzle-orm/pg-core";
+import type { PostgresJsQueryResultHKT } from "drizzle-orm/postgres-js";
+import { db, sql, type schema } from "./db";
+import {
+  campaignLists, campaignRecipients, campaigns, contactListMembers, contacts, suppressions,
+} from "./db/schema";
 import { normalizeEmail } from "./email-address";
 import { randomToken } from "./crypto";
+
+/**
+ * Either the shared connection or a transaction on it. Passing a transaction is
+ * what lets a caller make "queue the campaign" all-or-nothing.
+ */
+export type Executor = PgDatabase<PostgresJsQueryResultHKT, typeof schema>;
 
 export type CandidateContact = {
   contactId: string | null;
@@ -41,9 +51,9 @@ export function dedupeCandidates(candidates: CandidateContact[]): {
 }
 
 /** Every contact in the given lists, with duplicates still present. */
-async function loadCandidates(listIds: string[]): Promise<CandidateContact[]> {
+async function loadCandidates(listIds: string[], executor: Executor = db): Promise<CandidateContact[]> {
   if (listIds.length === 0) return [];
-  const rows = await db
+  const rows = await executor
     .select({
       contactId: contacts.id,
       email: contacts.email,
@@ -85,12 +95,51 @@ export async function previewAudience(listIds: string[]): Promise<AudiencePrevie
   };
 }
 
-async function suppressedAmong(emails: string[]): Promise<Set<string>> {
-  if (emails.length === 0) return new Set();
-  const rows = await sql<{ email_normalized: string }[]>`
-    SELECT email_normalized FROM suppressions WHERE email_normalized = ANY(${emails}::text[])
-  `;
-  return new Set(rows.map((r) => r.email_normalized));
+/**
+ * How many people each of these campaigns would email if it started now, for
+ * the list page: one grouped query, however many campaigns and contacts there are.
+ *
+ * It applies the same two rules as `previewAudience` and `generateRecipients` —
+ * a person in several selected lists counts once (contacts are unique by
+ * normalized address), and unsubscribed addresses do not count — but in SQL, so a
+ * page listing scheduled campaigns does not load every contact into memory.
+ * It is an estimate: the queue is built when sending actually starts.
+ */
+export async function estimateRecipients(campaignIds: string[]): Promise<Map<string, number>> {
+  const estimates = new Map<string, number>(campaignIds.map((id) => [id, 0]));
+  if (campaignIds.length === 0) return estimates;
+
+  const rows = await db
+    .select({ campaignId: campaignLists.campaignId, total: countDistinct(contacts.emailNormalized) })
+    .from(campaignLists)
+    .innerJoin(contactListMembers, eq(contactListMembers.listId, campaignLists.listId))
+    .innerJoin(contacts, eq(contacts.id, contactListMembers.contactId))
+    .where(and(
+      inArray(campaignLists.campaignId, campaignIds),
+      notExists(
+        db.select({ one: suppressions.id }).from(suppressions)
+          .where(eq(suppressions.emailNormalized, contacts.emailNormalized)),
+      ),
+    ))
+    .groupBy(campaignLists.campaignId);
+
+  for (const row of rows) estimates.set(row.campaignId, Number(row.total));
+  return estimates;
+}
+
+/** Chunked so a very large audience cannot exceed the driver's parameter limit. */
+const SUPPRESSION_LOOKUP_CHUNK = 5000;
+
+async function suppressedAmong(emails: string[], executor: Executor = db): Promise<Set<string>> {
+  const found = new Set<string>();
+  for (let i = 0; i < emails.length; i += SUPPRESSION_LOOKUP_CHUNK) {
+    const rows = await executor
+      .select({ email: suppressions.emailNormalized })
+      .from(suppressions)
+      .where(inArray(suppressions.emailNormalized, emails.slice(i, i + SUPPRESSION_LOOKUP_CHUNK)));
+    for (const row of rows) found.add(row.email);
+  }
+  return found;
 }
 
 export type GenerateResult = {
@@ -107,25 +156,28 @@ export type GenerateResult = {
  * to a contact list never rewrite history. The UNIQUE(campaign_id,
  * email_normalized) index plus ON CONFLICT DO NOTHING makes this safe to call
  * more than once: a retried HTTP request cannot duplicate the queue.
+ *
+ * Every read and write goes through `executor`, so when that is a transaction the
+ * whole queue is written — or, on any failure, none of it is.
  */
-export async function generateRecipients(campaignId: string): Promise<GenerateResult> {
-  const listRows = await db
+export async function generateRecipients(campaignId: string, executor: Executor = db): Promise<GenerateResult> {
+  const listRows = await executor
     .select({ listId: campaignLists.listId })
     .from(campaignLists)
     .where(eq(campaignLists.campaignId, campaignId));
 
   const listIds = listRows.map((r) => r.listId);
-  const candidates = await loadCandidates(listIds);
+  const candidates = await loadCandidates(listIds, executor);
   const { unique, duplicatesRemoved } = dedupeCandidates(candidates);
 
-  const suppressedSet = await suppressedAmong(unique.map((u) => u.emailNormalized));
+  const suppressedSet = await suppressedAmong(unique.map((u) => u.emailNormalized), executor);
   const sendable = unique.filter((u) => !suppressedSet.has(u.emailNormalized));
 
   let inserted = 0;
   const CHUNK = 500;
   for (let i = 0; i < sendable.length; i += CHUNK) {
     const chunk = sendable.slice(i, i + CHUNK);
-    const rows = await db
+    const rows = await executor
       .insert(campaignRecipients)
       .values(
         chunk.map((c) => ({
@@ -147,12 +199,13 @@ export async function generateRecipients(campaignId: string): Promise<GenerateRe
     inserted += rows.length;
   }
 
-  const totalRows = await sql<{ total: string }[]>`
-    SELECT count(*)::text AS total FROM campaign_recipients WHERE campaign_id = ${campaignId}
-  `;
-  const total = Number(totalRows[0]?.total ?? 0);
+  const [totalRow] = await executor
+    .select({ total: count() })
+    .from(campaignRecipients)
+    .where(eq(campaignRecipients.campaignId, campaignId));
+  const total = Number(totalRow?.total ?? 0);
 
-  await db
+  await executor
     .update(campaigns)
     .set({ totalRecipients: total, updatedAt: new Date() })
     .where(eq(campaigns.id, campaignId));

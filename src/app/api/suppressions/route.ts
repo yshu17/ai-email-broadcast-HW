@@ -34,7 +34,7 @@ export async function POST(request: Request) {
   return withAuthMutation(async () => {
     const body = await readJson<{ email?: string; note?: string }>(request);
     const email = str(body.email, "Email", { max: 254 });
-    if (!isValidEmail(email)) badRequest("That is not a valid email address");
+    if (!isValidEmail(email)) badRequest("err.email.invalid");
 
     await suppressEmail({
       email,

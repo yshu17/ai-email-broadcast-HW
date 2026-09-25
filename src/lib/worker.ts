@@ -5,9 +5,12 @@ import { suppressions } from "./db/schema";
 import { getSmtpConfig, appUrl, type ResolvedSmtpConfig } from "./settings";
 import { createTransport, isPermanentSmtpError, sanitizeErrorMessage, sendMessage } from "./mailer";
 import { buildMessage } from "./message-builder";
+import { activateDueCampaigns, recoverStuckCampaigns } from "./campaign-activation";
+import { emitEvent } from "./events";
+import { processState } from "./process-state";
 import {
   claimRecipients,
-  countSentInLastHour,
+  countSentInWindow,
   filterSuppressed,
   finalizeCompletedCampaigns,
   logSendAttempt,
@@ -22,7 +25,7 @@ import {
   scheduleRetry,
   type ClaimedRecipient,
 } from "./queue";
-import { MAX_ATTEMPTS, batchSize, retryDelaySeconds, shouldRetry } from "./rate-limit";
+import { HOUR_SECONDS, MAX_ATTEMPTS, batchSize, retryDelaySeconds, shouldRetry, type RateWindow } from "./rate-limit";
 
 export type TickResult = {
   claimed: number;
@@ -31,6 +34,13 @@ export type TickResult = {
   retried: number;
   suppressed: number;
   reclaimed: number;
+  /** Scheduled campaigns found due this tick (whether or not each could be started). */
+  dueCampaigns: number;
+  /** Scheduled campaigns whose time arrived and that were handed to the queue this tick. */
+  activatedCampaigns: number;
+  failedActivations: number;
+  /** Campaigns found QUEUED with no queue at all, and given one. Normally 0. */
+  recoveredCampaigns: number;
   completedCampaigns: number;
   rateLimited: boolean;
   durationMs: number;
@@ -50,17 +60,50 @@ const TICK_INTERVAL_SECONDS = Number(process.env.WORKER_TICK_INTERVAL_SECONDS ??
  * an incremented attempt count and a lease) *before* any SMTP traffic happens.
  * Everything after that only ever narrows the row's state, so re-running a tick
  * — or running two concurrently — cannot produce a second send.
+ *
+ * A tick begins by starting any scheduled campaign whose time has come. That only
+ * writes the campaign's recipient rows; the sending below then treats them like
+ * any other queued mail, so the hourly rate limit and the retry rules apply
+ * unchanged. A scheduled time is when sending starts, not when it finishes.
  */
-export async function runTick(options: { timeBudgetMs?: number } = {}): Promise<TickResult> {
+export type TickOptions = {
+  timeBudgetMs?: number;
+  /** Replaces the database clock when deciding which scheduled campaigns are due. Tests and the test clock only. */
+  now?: Date;
+  /** Replaces the configured hourly ceiling. Only the test panel passes one. */
+  rateLimit?: RateWindow;
+  /** How often ticks are expected, used to spread the quota. Defaults to WORKER_TICK_INTERVAL_SECONDS. */
+  tickIntervalSeconds?: number;
+};
+
+/** Whether the previous batch was held back, so that "the limit is reached" is reported once, not every tick. */
+const limiter = processState("worker.limiter", () => ({ limited: false }));
+
+/** For tests: forget that the limit was reached, as a fresh process would. */
+export function resetRateLimiterState(): void {
+  limiter.limited = false;
+}
+
+export async function runTick(options: TickOptions = {}): Promise<TickResult> {
   const startedAt = Date.now();
   const deadline = startedAt + (options.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS);
   const workerId = `${process.env.WORKER_ID ?? "worker"}-${randomUUID().slice(0, 8)}`;
 
   const result: TickResult = {
     claimed: 0, sent: 0, failed: 0, retried: 0, suppressed: 0,
-    reclaimed: 0, completedCampaigns: 0, rateLimited: false,
+    reclaimed: 0, dueCampaigns: 0, activatedCampaigns: 0, failedActivations: 0, recoveredCampaigns: 0,
+    completedCampaigns: 0, rateLimited: false,
     durationMs: 0,
   };
+
+  // `options.now` lets tests move the scheduler's clock; the app never passes it.
+  const activation = await activateDueCampaigns({ deadline, now: options.now });
+  result.dueCampaigns = activation.due;
+  result.activatedCampaigns = activation.activated;
+  result.failedActivations = activation.failed;
+
+  // Never throws: a repair that cannot run must not stop the queue from being sent.
+  result.recoveredCampaigns = (await recoverStuckCampaigns({ deadline })).recovered;
 
   result.reclaimed = await reclaimExpiredLeases();
 
@@ -75,20 +118,36 @@ export async function runTick(options: { timeBudgetMs?: number } = {}): Promise<
   let transport: Transporter | null = null;
 
   try {
+    // The configured hourly ceiling, unless a caller (the test panel) sets its own window.
+    const rate: RateWindow = options.rateLimit ?? { maxEmails: config.maxEmailsPerHour, windowSeconds: HOUR_SECONDS };
+
     while (Date.now() < deadline) {
-      const sentInLastHour = await countSentInLastHour();
+      const sentInWindow = await countSentInWindow(rate.windowSeconds);
       const limit = batchSize({
-        maxPerHour: config.maxEmailsPerHour,
-        sentInLastHour,
+        maxPerHour: rate.maxEmails,
+        sentInLastHour: sentInWindow,
         batchCap: BATCH_CAP,
-        tickIntervalSeconds: TICK_INTERVAL_SECONDS,
+        tickIntervalSeconds: options.tickIntervalSeconds ?? TICK_INTERVAL_SECONDS,
+        factor: rate.safetyFactor,
+        windowSeconds: rate.windowSeconds,
       });
 
       if (limit <= 0) {
         result.rateLimited = true;
-        result.note = `Hourly rate limit reached (${sentInLastHour} sent in the last hour).`;
+        result.note = rate.windowSeconds === HOUR_SECONDS
+          ? `Hourly rate limit reached (${sentInWindow} sent in the last hour).`
+          : `Rate limit reached (${sentInWindow} sent in the last ${rate.windowSeconds} seconds).`;
+        // Said once when the limit is first hit, not on every tick that finds it still hit.
+        if (!limiter.limited) {
+          limiter.limited = true;
+          emitEvent({
+            type: "rate.limited", source: "rate-limiter",
+            data: { sent: sentInWindow, maxEmails: rate.maxEmails, windowSeconds: rate.windowSeconds },
+          });
+        }
         break;
       }
+      limiter.limited = false;
 
       const claimed = await claimRecipients(workerId, limit);
       if (claimed.length === 0) break;
@@ -116,11 +175,19 @@ export async function runTick(options: { timeBudgetMs?: number } = {}): Promise<
       // Reserve quota for the whole batch before sending any of it, so a
       // concurrent worker sees the reservation immediately.
       const reservations = await logSendAttempt(sendable.length);
+      emitEvent({
+        type: "rate.allowed", source: "rate-limiter",
+        data: { count: sendable.length, maxEmails: rate.maxEmails, windowSeconds: rate.windowSeconds },
+      });
 
       const outcome = await sendBatch(transport, config, sendable);
       result.sent += outcome.sent;
       result.failed += outcome.failed;
       result.retried += outcome.retried;
+      emitEvent({
+        type: "mail.batch", source: "queue",
+        data: { sent: outcome.sent, failed: outcome.failed, retried: outcome.retried },
+      });
 
       // A batch that hit a hard transport failure means the next one will too.
       if (outcome.abort) {

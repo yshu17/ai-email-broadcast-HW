@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { db } from "./db";
 import { appSettings } from "./db/schema";
 import { decryptSecret, encryptSecret } from "./crypto";
+import { testPanelEnabled } from "./testing/access";
 
 export type SmtpSecurity = "none" | "starttls" | "tls";
 
@@ -89,9 +90,33 @@ export type ResolvedSmtpConfig = {
 /**
  * Server-only. Environment variables win over the database row, so a hardened
  * deployment can keep credentials entirely out of the DB.
+ *
+ * The one exception is a development or test environment with the test panel on:
+ * there the SMTP server is always the built-in test one (it accepts only `@test.invalid`
+ * addresses and delivers to nobody), whatever is configured, so no test can reach a real
+ * mail server, however SMTP is set up. Nothing is read from, or written to, the stored settings.
  */
 export async function getSmtpConfig(): Promise<ResolvedSmtpConfig | null> {
   const row = await loadSettingsRow();
+
+  // `NODE_ENV` is a build-time constant: a production build drops this branch, and with it the test SMTP
+  // server, so that code is not even part of what runs in production.
+  if (process.env.NODE_ENV !== "production" && testPanelEnabled()) {
+    const { ensureTestSmtp } = await import("./testing/test-smtp");
+    const smtp = await ensureTestSmtp();
+    const envHourly = Number(process.env.SMTP_MAX_EMAILS_PER_HOUR);
+    return {
+      host: smtp.host,
+      port: smtp.port,
+      security: "none",
+      user: null,
+      password: null,
+      fromEmail: "sender@test.invalid",
+      fromName: "Test panel",
+      replyTo: null,
+      maxEmailsPerHour: Number.isFinite(envHourly) && envHourly > 0 ? envHourly : row.maxEmailsPerHour,
+    };
+  }
 
   const host = process.env.SMTP_HOST || row.smtpHost;
   const portRaw = process.env.SMTP_PORT || row.smtpPort;

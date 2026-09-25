@@ -71,7 +71,7 @@ export async function POST(request: Request) {
     }>(request);
 
     const email = str(body.email, "Email", { max: 254 });
-    if (!isValidEmail(email)) badRequest("That is not a valid email address");
+    if (!isValidEmail(email)) badRequest("err.email.invalid");
 
     const summary = await importContacts(body.listId ?? null, [
       {
@@ -82,7 +82,7 @@ export async function POST(request: Request) {
     ]);
 
     if (summary.skippedSuppressed > 0) {
-      badRequest("That address is on the suppression list and cannot be added.");
+      badRequest("err.contact.suppressed");
     }
 
     const [contact] = await db
@@ -99,8 +99,8 @@ export async function DELETE(request: Request) {
   return withAuthMutation(async () => {
     const body = await readJson<{ ids?: string[]; listId?: string | null }>(request);
     const ids = Array.isArray(body.ids) ? body.ids.map(String) : [];
-    if (ids.length === 0) badRequest("No contacts selected");
-    if (ids.length > 5000) badRequest("Delete at most 5000 contacts at a time");
+    if (ids.length === 0) badRequest("err.contact.noneSelected");
+    if (ids.length > 5000) badRequest("err.contact.deleteLimit");
 
     if (body.listId) {
       // Scoped delete: remove from this list only.

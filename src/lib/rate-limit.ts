@@ -26,10 +26,24 @@ export function remainingAllowance(maxPerHour: number, sentInLastHour: number, f
   return Math.max(0, effectiveHourlyLimit(maxPerHour, factor) - Math.max(0, sentInLastHour));
 }
 
+/** The window the limit is counted over, unless told otherwise: a rolling hour. */
+export const HOUR_SECONDS = 3600;
+
 /**
- * Batch size for one worker invocation: bounded by the remaining hourly
- * allowance, the configured batch cap, and a per-tick share so a single tick
- * doesn't consume the whole hour's quota in one burst.
+ * "At most `maxEmails` in any `windowSeconds`": the rate the queue is held to.
+ *
+ * Normally that is the configured hourly ceiling over the rolling hour, and nobody
+ * passes one of these. The test panel passes a short window (say 2 emails in 10
+ * seconds) so the limit can be watched at work; `safetyFactor: 1` means "exactly this
+ * number", as the panel promises, instead of the margin kept below a real ceiling.
+ */
+export type RateWindow = { maxEmails: number; windowSeconds: number; safetyFactor?: number };
+
+/**
+ * Batch size for one worker invocation: bounded by the remaining allowance in the
+ * window (an hour, unless `windowSeconds` says otherwise), the configured batch cap,
+ * and a per-tick share so a single tick doesn't consume the whole window's quota in
+ * one burst. `maxPerHour` and `sentInLastHour` are per window, whatever its length.
  */
 export function batchSize(options: {
   maxPerHour: number;
@@ -37,13 +51,15 @@ export function batchSize(options: {
   batchCap: number;
   tickIntervalSeconds: number;
   factor?: number;
+  windowSeconds?: number;
 }): number {
   const { maxPerHour, sentInLastHour, batchCap, tickIntervalSeconds } = options;
+  const windowSeconds = options.windowSeconds ?? HOUR_SECONDS;
   const allowance = remainingAllowance(maxPerHour, sentInLastHour, options.factor);
   if (allowance <= 0) return 0;
 
   const perTickShare = Math.ceil(
-    (effectiveHourlyLimit(maxPerHour, options.factor) * Math.max(1, tickIntervalSeconds)) / 3600,
+    (effectiveHourlyLimit(maxPerHour, options.factor) * Math.max(1, tickIntervalSeconds)) / windowSeconds,
   );
   return Math.max(0, Math.min(allowance, batchCap, perTickShare));
 }

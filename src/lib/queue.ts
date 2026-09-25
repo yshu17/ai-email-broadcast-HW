@@ -1,6 +1,7 @@
 import { and, eq, inArray, sql as raw } from "drizzle-orm";
 import { db, sql } from "./db";
 import { campaignRecipients, campaigns } from "./db/schema";
+import { emitEvent } from "./events";
 
 /**
  * Persistent sending queue.
@@ -31,14 +32,19 @@ export type ClaimedRecipient = {
   replyTo: string | null;
 };
 
-/** SMTP attempts logged in the last rolling hour, across all workers. */
-export async function countSentInLastHour(): Promise<number> {
+/** SMTP attempts logged in the last `windowSeconds` (a rolling hour by default), across all workers. */
+export async function countSentInWindow(windowSeconds = 3600): Promise<number> {
   const rows = await sql<{ count: string }[]>`
     SELECT count(*)::text AS count
     FROM smtp_send_log
-    WHERE occurred_at > now() - interval '1 hour'
+    WHERE occurred_at > now() - (${windowSeconds} * interval '1 second')
   `;
   return Number(rows[0]?.count ?? 0);
+}
+
+/** SMTP attempts logged in the last rolling hour, across all workers. */
+export async function countSentInLastHour(): Promise<number> {
+  return countSentInWindow(3600);
 }
 
 /** Records one SMTP transaction attempt against the rolling-hour budget. */
@@ -230,24 +236,38 @@ export async function filterSuppressed(emails: string[]): Promise<Set<string>> {
   return new Set(rows.map((r) => r.email_normalized));
 }
 
-/** Flips QUEUED campaigns that now have in-flight work to SENDING. */
-export async function markCampaignsStarted(campaignIds: string[]): Promise<void> {
-  if (campaignIds.length === 0) return;
-  await db
+/** Flips QUEUED campaigns that now have in-flight work to SENDING. Returns the ones that were flipped. */
+export async function markCampaignsStarted(campaignIds: string[]): Promise<string[]> {
+  if (campaignIds.length === 0) return [];
+  const started = await db
     .update(campaigns)
     .set({ status: "SENDING", startedAt: raw`COALESCE(${campaigns.startedAt}, now())`, updatedAt: new Date() })
-    .where(and(inArray(campaigns.id, campaignIds), eq(campaigns.status, "QUEUED")));
+    .where(and(inArray(campaigns.id, campaignIds), eq(campaigns.status, "QUEUED")))
+    .returning({ id: campaigns.id });
+  for (const { id } of started) {
+    emitEvent({ type: "campaign.started", source: "queue", campaignId: id, from: "QUEUED", to: "SENDING" });
+  }
+  return started.map((row) => row.id);
 }
 
 /**
  * Marks campaigns COMPLETED once nothing is left to do. Runs as one statement so
  * two workers finishing simultaneously can't produce a half-updated campaign.
+ *
+ * A QUEUED campaign is finished too when it has a queue and none of it is pending
+ * (say everyone unsubscribed before the first claim); without this it would wait
+ * in QUEUED for ever, since only claiming moves it on to SENDING. A QUEUED
+ * campaign with no queue at all is deliberately NOT finished: it has sent
+ * nothing, and `recoverStuckCampaigns` deals with it.
  */
 export async function finalizeCompletedCampaigns(): Promise<number> {
   const rows = await sql<{ id: string }[]>`
     UPDATE campaigns c
     SET status = 'COMPLETED', completed_at = now(), updated_at = now()
-    WHERE c.status = 'SENDING'
+    WHERE (
+        c.status = 'SENDING'
+        OR (c.status = 'QUEUED' AND EXISTS (SELECT 1 FROM campaign_recipients q WHERE q.campaign_id = c.id))
+      )
       AND NOT EXISTS (
         SELECT 1 FROM campaign_recipients r
         WHERE r.campaign_id = c.id
@@ -255,6 +275,9 @@ export async function finalizeCompletedCampaigns(): Promise<number> {
       )
     RETURNING c.id
   `;
+  for (const { id } of rows) {
+    emitEvent({ type: "campaign.completed", source: "queue", campaignId: id, to: "COMPLETED" });
+  }
   return rows.length;
 }
 

@@ -8,6 +8,8 @@ import { appUrl, getSmtpConfig } from "@/lib/settings";
 import { createTransport, sanitizeErrorMessage, sendMessage } from "@/lib/mailer";
 import { isValidEmail } from "@/lib/email-address";
 import { logSendAttempt } from "@/lib/queue";
+import { getApiLocale } from "@/i18n/server";
+import { translate } from "@/i18n/translate";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -24,15 +26,15 @@ export async function POST(request: Request, ctx: Ctx) {
     const body = await readJson<{ to?: string; firstName?: string; lastName?: string }>(request);
 
     const to = str(body.to, "Recipient", { max: 254 });
-    if (!isValidEmail(to)) badRequest("That is not a valid email address");
+    if (!isValidEmail(to)) badRequest("err.email.invalid");
 
     const rows = await db.select().from(campaigns).where(eq(campaigns.id, id)).limit(1);
     const campaign = rows[0];
-    if (!campaign) notFound("Campaign not found");
-    if (!campaign.subject.trim()) badRequest("Give the campaign a subject first");
+    if (!campaign) notFound("err.campaign.notFound");
+    if (!campaign.subject.trim()) badRequest("err.campaign.subjectRequired");
 
     const config = await getSmtpConfig();
-    if (!config) badRequest("Configure SMTP in Settings first");
+    if (!config) badRequest("err.smtp.configureFirst");
 
     const message = buildMessage({
       campaign,
@@ -57,7 +59,7 @@ export async function POST(request: Request, ctx: Ctx) {
         replyTo: campaign.replyTo,
       });
       await logSendAttempt(1);
-      return NextResponse.json({ ok: true, message: `Test email sent to ${to}.` });
+      return NextResponse.json({ ok: true, message: translate(await getApiLocale(), "common.testSentTo", { email: to }) });
     } catch (error) {
       return NextResponse.json(
         { ok: false, error: sanitizeErrorMessage(error, config) },

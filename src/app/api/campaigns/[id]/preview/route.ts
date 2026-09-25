@@ -19,7 +19,7 @@ export async function GET(request: Request, ctx: Ctx) {
 
     const rows = await db.select().from(campaigns).where(eq(campaigns.id, id)).limit(1);
     const campaign = rows[0];
-    if (!campaign) notFound("Campaign not found");
+    if (!campaign) notFound("err.campaign.notFound");
 
     const message = buildMessage({
       campaign,

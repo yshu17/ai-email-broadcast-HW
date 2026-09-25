@@ -12,15 +12,23 @@ import {
 let cachedKey: Buffer | null = null;
 
 /**
+ * The example configuration ships values such as "replace-me-with-openssl-rand-hex-32" so a copy of it
+ * has something in every slot. A production server must not run on them: they are public.
+ */
+export function isPlaceholderSecret(value: string | undefined): boolean {
+  return process.env.NODE_ENV === "production" && /^replace-me/i.test(value ?? "");
+}
+
+/**
  * 32-byte key derived from ENCRYPTION_KEY. Accepts a 64-char hex string, a
  * base64 string, or any passphrase (hashed to 32 bytes as a fallback).
  */
 function encryptionKey(): Buffer {
   if (cachedKey) return cachedKey;
   const raw = process.env.ENCRYPTION_KEY;
-  if (!raw || raw.length < 16) {
+  if (!raw || raw.length < 16 || isPlaceholderSecret(raw)) {
     throw new Error(
-      "ENCRYPTION_KEY is missing or too short. Generate one with: openssl rand -hex 32",
+      "ENCRYPTION_KEY is missing, too short or still the example value. Generate one with: openssl rand -hex 32",
     );
   }
   let key: Buffer;

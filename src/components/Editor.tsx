@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useT } from "@/i18n/client";
+import type { MessageKey } from "@/i18n/translate";
 
 /**
  * Small contenteditable WYSIWYG editor.
@@ -21,38 +23,41 @@ type Props = {
 };
 
 type ToolbarButton = {
+  /** What the button shows: a glyph, or (when `labelKey` is set) a word from the dictionary. */
   label: string;
-  title: string;
+  labelKey?: MessageKey;
+  titleKey: MessageKey;
   command: string;
   argument?: string;
   isBlock?: boolean;
 };
 
 const INLINE: ToolbarButton[] = [
-  { label: "B", title: "Bold (Ctrl+B)", command: "bold" },
-  { label: "I", title: "Italic (Ctrl+I)", command: "italic" },
-  { label: "U", title: "Underline (Ctrl+U)", command: "underline" },
+  { label: "B", titleKey: "editor.bold", command: "bold" },
+  { label: "I", titleKey: "editor.italic", command: "italic" },
+  { label: "U", titleKey: "editor.underline", command: "underline" },
 ];
 
 const BLOCKS: ToolbarButton[] = [
-  { label: "P", title: "Paragraph", command: "formatBlock", argument: "p", isBlock: true },
-  { label: "H1", title: "Heading 1", command: "formatBlock", argument: "h1", isBlock: true },
-  { label: "H2", title: "Heading 2", command: "formatBlock", argument: "h2", isBlock: true },
-  { label: "H3", title: "Heading 3", command: "formatBlock", argument: "h3", isBlock: true },
+  { label: "P", titleKey: "editor.paragraph", command: "formatBlock", argument: "p", isBlock: true },
+  { label: "H1", titleKey: "editor.heading1", command: "formatBlock", argument: "h1", isBlock: true },
+  { label: "H2", titleKey: "editor.heading2", command: "formatBlock", argument: "h2", isBlock: true },
+  { label: "H3", titleKey: "editor.heading3", command: "formatBlock", argument: "h3", isBlock: true },
 ];
 
 const LISTS: ToolbarButton[] = [
-  { label: "• List", title: "Bulleted list", command: "insertUnorderedList" },
-  { label: "1. List", title: "Numbered list", command: "insertOrderedList" },
+  { label: "", labelKey: "editor.bulletedLabel", titleKey: "editor.bulletedList", command: "insertUnorderedList" },
+  { label: "", labelKey: "editor.numberedLabel", titleKey: "editor.numberedList", command: "insertOrderedList" },
 ];
 
 const ALIGN: ToolbarButton[] = [
-  { label: "⯇", title: "Align left", command: "justifyLeft" },
-  { label: "≡", title: "Align centre", command: "justifyCenter" },
-  { label: "⯈", title: "Align right", command: "justifyRight" },
+  { label: "⯇", titleKey: "editor.alignLeft", command: "justifyLeft" },
+  { label: "≡", titleKey: "editor.alignCenter", command: "justifyCenter" },
+  { label: "⯈", titleKey: "editor.alignRight", command: "justifyRight" },
 ];
 
 export default function Editor({ value, onChange, disabled }: Props) {
+  const { t } = useT();
   const ref = useRef<HTMLDivElement>(null);
   const [showSource, setShowSource] = useState(false);
   const [source, setSource] = useState(value);
@@ -77,16 +82,16 @@ export default function Editor({ value, onChange, disabled }: Props) {
 
   const addLink = useCallback(() => {
     if (disabled) return;
-    const url = window.prompt("Link URL (https://…)");
+    const url = window.prompt(t("editor.linkPrompt"));
     if (!url) return;
     if (!/^(https?:|mailto:|tel:)/i.test(url)) {
-      window.alert("Links must start with https://, http://, mailto: or tel:");
+      window.alert(t("editor.linkInvalid"));
       return;
     }
     ref.current?.focus();
     document.execCommand("createLink", false, url);
     onChange(ref.current?.innerHTML ?? "");
-  }, [disabled, onChange]);
+  }, [disabled, onChange, t]);
 
   /** Paste as plain text: pasted markup from Word/web is a formatting minefield. */
   const onPaste = useCallback((event: React.ClipboardEvent) => {
@@ -97,15 +102,15 @@ export default function Editor({ value, onChange, disabled }: Props) {
 
   const toolbarButton = (button: ToolbarButton) => (
     <button
-      key={button.title}
+      key={button.titleKey}
       type="button"
       className="btn px-2 py-1 text-xs"
-      title={button.title}
+      title={t(button.titleKey)}
       disabled={disabled}
       onMouseDown={(e) => e.preventDefault()}
       onClick={() => exec(button)}
     >
-      {button.label}
+      {button.labelKey ? t(button.labelKey) : button.label}
     </button>
   );
 
@@ -121,17 +126,17 @@ export default function Editor({ value, onChange, disabled }: Props) {
         {ALIGN.map(toolbarButton)}
         <span className="mx-1 h-4 w-px" style={{ backgroundColor: "var(--color-border)" }} />
         <button type="button" className="btn px-2 py-1 text-xs" onMouseDown={(e) => e.preventDefault()}
-          onClick={addLink} disabled={disabled} title="Insert link">🔗 Link</button>
+          onClick={addLink} disabled={disabled} title={t("editor.insertLink")}>{t("editor.linkLabel")}</button>
         <button type="button" className="btn px-2 py-1 text-xs" onMouseDown={(e) => e.preventDefault()}
-          onClick={() => exec({ label: "", title: "", command: "unlink" })} disabled={disabled}
-          title="Remove link">Unlink</button>
+          onClick={() => exec({ label: "", titleKey: "editor.removeLink", command: "unlink" })} disabled={disabled}
+          title={t("editor.removeLink")}>{t("editor.unlinkLabel")}</button>
         <span className="mx-1 h-4 w-px" style={{ backgroundColor: "var(--color-border)" }} />
         <button type="button" className="btn px-2 py-1 text-xs" onMouseDown={(e) => e.preventDefault()}
-          onClick={() => exec({ label: "", title: "", command: "undo" })} disabled={disabled}
-          title="Undo (Ctrl+Z)">↶</button>
+          onClick={() => exec({ label: "", titleKey: "editor.undo", command: "undo" })} disabled={disabled}
+          title={t("editor.undo")}>↶</button>
         <button type="button" className="btn px-2 py-1 text-xs" onMouseDown={(e) => e.preventDefault()}
-          onClick={() => exec({ label: "", title: "", command: "redo" })} disabled={disabled}
-          title="Redo (Ctrl+Shift+Z)">↷</button>
+          onClick={() => exec({ label: "", titleKey: "editor.redo", command: "redo" })} disabled={disabled}
+          title={t("editor.redo")}>↷</button>
 
         <button
           type="button"
@@ -146,7 +151,7 @@ export default function Editor({ value, onChange, disabled }: Props) {
             setShowSource((s) => !s);
           }}
         >
-          {showSource ? "Visual" : "HTML"}
+          {showSource ? t("editor.visual") : "HTML"}
         </button>
       </div>
 
@@ -159,7 +164,7 @@ export default function Editor({ value, onChange, disabled }: Props) {
           spellCheck={false}
           onChange={(e) => setSource(e.target.value)}
           onBlur={() => onChange(source)}
-          aria-label="HTML source"
+          aria-label={t("editor.sourceLabel")}
         />
       ) : (
         <div
@@ -167,13 +172,13 @@ export default function Editor({ value, onChange, disabled }: Props) {
           className="editor-surface"
           contentEditable={!disabled}
           suppressContentEditableWarning
-          data-placeholder="Write your email… Use {{firstName}} to personalize it."
+          data-placeholder={t("editor.placeholder", { variable: "{{firstName}}" })}
           onInput={(e) => onChange((e.target as HTMLDivElement).innerHTML)}
           onBlur={(e) => onChange((e.target as HTMLDivElement).innerHTML)}
           onPaste={onPaste}
           role="textbox"
           aria-multiline="true"
-          aria-label="Email content"
+          aria-label={t("wizard.compose.content")}
         />
       )}
     </div>

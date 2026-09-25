@@ -1,8 +1,11 @@
 "use client";
 
 import { useState } from "react";
+import { useT } from "@/i18n/client";
+import { Rich } from "@/i18n/rich";
 
 export default function UnsubscribeForm({ token, email }: { token: string; email: string }) {
+  const { t } = useT();
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
@@ -24,23 +27,21 @@ export default function UnsubscribeForm({ token, email }: { token: string; email
   if (done) {
     return (
       <>
-        <h1 className="text-lg font-semibold">You are unsubscribed</h1>
-        <p className="hint mt-2"><strong>{email}</strong> will not receive further emails from us.</p>
+        <h1 className="text-lg font-semibold">{t("unsubscribe.done.title")}</h1>
+        <p className="hint mt-2"><Rich text={t("unsubscribe.done.body", { email })} /></p>
       </>
     );
   }
 
   return (
     <>
-      <h1 className="text-lg font-semibold">Unsubscribe</h1>
-      <p className="mt-2 text-sm">
-        Stop sending emails to <strong>{email}</strong>?
-      </p>
+      <h1 className="text-lg font-semibold">{t("unsubscribe.title")}</h1>
+      <p className="mt-2 text-sm"><Rich text={t("unsubscribe.question", { email })} /></p>
       {error ? (
-        <p className="mt-2 text-sm text-red-600">Something went wrong. Please try again.</p>
+        <p className="mt-2 text-sm text-red-600">{t("unsubscribe.error")}</p>
       ) : null}
       <button className="btn btn-primary mt-4" onClick={unsubscribe} disabled={busy}>
-        {busy ? "Unsubscribing…" : "Yes, unsubscribe me"}
+        {busy ? t("unsubscribe.busy") : t("unsubscribe.button")}
       </button>
     </>
   );

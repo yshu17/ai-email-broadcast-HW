@@ -21,7 +21,7 @@ export async function POST(_request: Request, ctx: Ctx) {
       .where(and(eq(campaigns.id, id), inArray(campaigns.status, ["QUEUED", "SENDING"])))
       .returning({ id: campaigns.id });
 
-    if (rows.length === 0) conflict("Only a queued or sending campaign can be paused");
+    if (rows.length === 0) conflict("err.campaign.pauseState");
     return NextResponse.json({ ok: true });
   });
 }

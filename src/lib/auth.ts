@@ -3,6 +3,7 @@ import { and, eq, gt, lt } from "drizzle-orm";
 import { db } from "./db";
 import { sessions, users } from "./db/schema";
 import { randomToken, sha256, verifyPassword } from "./crypto";
+import { translate, type MessageKey, type Params } from "../i18n/translate";
 
 export const SESSION_COOKIE = "mailer_session";
 const SESSION_TTL_DAYS = 14;
@@ -71,15 +72,30 @@ export async function authenticate(email: string, password: string): Promise<Ses
 /* --------------------------------------------------------------- guards */
 
 export class HttpError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message);
+  /**
+   * `key` names the message in the dictionary, so the API layer can word it in the
+   * caller's language; `message` is always the English wording. `params` fill the
+   * message's {placeholders}; `details` (e.g. `code`, `field`) are merged into the JSON
+   * error body as they are.
+   */
+  readonly params?: Params;
+  readonly details?: Record<string, unknown>;
+
+  constructor(
+    readonly status: number,
+    readonly key: MessageKey,
+    options: { params?: Params; details?: Record<string, unknown> } = {},
+  ) {
+    super(translate("en", key, options.params));
+    this.params = options.params;
+    this.details = options.details;
   }
 }
 
 /** Throws 401 unless a valid admin session is present. */
 export async function requireUser(): Promise<SessionUser> {
   const user = await getSessionUser();
-  if (!user) throw new HttpError(401, "Authentication required");
+  if (!user) throw new HttpError(401, "err.auth.required");
   return user;
 }
 
@@ -98,9 +114,9 @@ export async function assertSameOrigin(): Promise<void> {
   try {
     originHost = new URL(origin).host;
   } catch {
-    throw new HttpError(403, "Invalid origin");
+    throw new HttpError(403, "err.origin.invalid");
   }
-  if (!host || originHost !== host) throw new HttpError(403, "Cross-origin request rejected");
+  if (!host || originHost !== host) throw new HttpError(403, "err.origin.crossOrigin");
 }
 
 /** Both checks, for every mutating admin endpoint. */

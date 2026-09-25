@@ -1,5 +1,7 @@
 import { buildMergeValues, escapeHtml, renderTemplate, renderTemplateHtml } from "./personalize";
 import { htmlToText, wrapEmailDocument } from "./html";
+import { emailLocale, type Locale } from "../i18n/locale";
+import { translate } from "../i18n/translate";
 
 export type RecipientLike = {
   email: string;
@@ -40,10 +42,10 @@ function pixelTag(url: string): string {
   return `<img src="${escapeHtml(url)}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0;outline:none;" />`;
 }
 
-function unsubscribeFooter(url: string): string {
+function unsubscribeFooter(url: string, language: Locale): string {
   return `<div style="margin-top:32px;padding-top:16px;border-top:1px solid #e4e4e7;font-size:12px;line-height:1.5;color:#71717a;">
-You are receiving this email because you subscribed to our list.
-<a href="${escapeHtml(url)}" style="color:#71717a;text-decoration:underline;">Unsubscribe</a>
+${escapeHtml(translate(language, "email.footer.reason"))}
+<a href="${escapeHtml(url)}" style="color:#71717a;text-decoration:underline;">${escapeHtml(translate(language, "email.footer.unsubscribe"))}</a>
 </div>`;
 }
 
@@ -60,8 +62,11 @@ export function buildMessage(options: {
   preview?: boolean;
   /** Real address for the mailto: form of List-Unsubscribe, when one exists. */
   unsubscribeMailto?: string | null;
+  /** The language of the words the app adds (default: EMAIL_LANGUAGE, i.e. `ru`). */
+  language?: Locale;
 }): BuiltMessage {
   const { campaign, recipient, baseUrl, preview = false } = options;
+  const language = options.language ?? emailLocale();
 
   const unsubUrl = recipient.unsubscribeToken
     ? unsubscribeUrl(baseUrl, recipient.unsubscribeToken)
@@ -82,7 +87,7 @@ export function buildMessage(options: {
 
   // Authors can place the link themselves via {{unsubscribeUrl}}; otherwise we
   // append a footer, because every campaign email must carry one.
-  if (!body.includes(unsubUrl)) body += unsubscribeFooter(unsubUrl);
+  if (!body.includes(unsubUrl)) body += unsubscribeFooter(unsubUrl, language);
 
   if (!preview && recipient.trackingToken) {
     body += pixelTag(trackingPixelUrl(baseUrl, recipient.trackingToken));
@@ -93,7 +98,7 @@ export function buildMessage(options: {
   const textSource = campaign.textBody?.trim()
     ? renderTemplate(campaign.textBody, values)
     : htmlToText(renderTemplateHtml(campaign.compiledHtml, values));
-  const text = `${textSource}\n\n---\nUnsubscribe: ${unsubUrl}\n`;
+  const text = `${textSource}\n\n---\n${translate(language, "email.text.unsubscribe", { url: unsubUrl })}\n`;
 
   const headers: Record<string, string> = {};
   if (recipient.unsubscribeToken) {

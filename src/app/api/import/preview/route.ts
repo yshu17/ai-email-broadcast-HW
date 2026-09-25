@@ -11,15 +11,15 @@ export async function POST(request: Request) {
   return withAuthMutation(async () => {
     const form = await request.formData();
     const file = form.get("file");
-    if (!(file instanceof File)) badRequest("No file uploaded");
-    if (file.size === 0) badRequest("That file is empty");
+    if (!(file instanceof File)) badRequest("err.import.noFile");
+    if (file.size === 0) badRequest("err.import.fileEmpty");
     if (file.size > MAX_UPLOAD_BYTES) {
-      badRequest(`File is too large (limit ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)} MB)`);
+      badRequest("err.import.tooLargeLimit", { mb: Math.round(MAX_UPLOAD_BYTES / 1024 / 1024) });
     }
 
     const name = file.name.toLowerCase();
     if (!name.endsWith(".csv") && !name.endsWith(".txt")) {
-      badRequest("Only .csv and .txt files are supported");
+      badRequest("err.import.fileType");
     }
 
     // Always decoded as UTF-8; a BOM is stripped by the parser.
@@ -31,7 +31,7 @@ export async function POST(request: Request) {
         : detectDelimiter(text);
 
     const rows = parseCsv(text, delimiter);
-    if (rows.length === 0) badRequest("No rows found in that file");
+    if (rows.length === 0) badRequest("err.import.noRows");
 
     const hasHeader = looksLikeHeader(rows[0]);
     const header = hasHeader ? rows[0] : rows[0].map((_c, i) => `Column ${i + 1}`);

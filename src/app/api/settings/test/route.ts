@@ -3,6 +3,8 @@ import { badRequest, readJson, str, withAuthMutation } from "@/lib/api";
 import { getSmtpConfig } from "@/lib/settings";
 import { createTransport, sanitizeErrorMessage, sendMessage } from "@/lib/mailer";
 import { isValidEmail } from "@/lib/email-address";
+import { getApiLocale } from "@/i18n/server";
+import { translate } from "@/i18n/translate";
 
 /**
  * Verifies the connection, and optionally sends a real test message.
@@ -14,25 +16,29 @@ export async function POST(request: Request) {
     const mode = body.mode === "send" ? "send" : "verify";
 
     const config = await getSmtpConfig();
-    if (!config) badRequest("SMTP is not configured yet. Fill in host, port and sender email first.");
+    if (!config) badRequest("err.smtp.notConfigured");
+    const locale = await getApiLocale();
 
     const transport = createTransport(config);
     try {
       await transport.verify();
       if (mode === "verify") {
-        return NextResponse.json({ ok: true, message: `Connected to ${config.host}:${config.port}.` });
+        return NextResponse.json({
+          ok: true,
+          message: translate(locale, "smtp.connected", { host: config.host, port: config.port }),
+        });
       }
 
       const to = str(body.to, "Recipient", { max: 254 });
-      if (!isValidEmail(to)) badRequest("Recipient is not a valid email address");
+      if (!isValidEmail(to)) badRequest("err.settings.recipientInvalid");
 
       await sendMessage(transport, config, {
         to,
-        subject: "SMTP test message",
-        html: "<p>This is a test message confirming your SMTP settings work.</p>",
-        text: "This is a test message confirming your SMTP settings work.",
+        subject: translate(locale, "email.smtpTest.subject"),
+        html: `<p>${translate(locale, "email.smtpTest.body")}</p>`,
+        text: translate(locale, "email.smtpTest.body"),
       });
-      return NextResponse.json({ ok: true, message: `Test email sent to ${to}.` });
+      return NextResponse.json({ ok: true, message: translate(locale, "common.testSentTo", { email: to }) });
     } catch (error) {
       // sanitizeErrorMessage strips any credential that appears in the error.
       return NextResponse.json({ ok: false, error: sanitizeErrorMessage(error, config) }, { status: 400 });

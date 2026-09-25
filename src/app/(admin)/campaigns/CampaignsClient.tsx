@@ -2,112 +2,91 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback } from "react";
-import { Alert, EmptyState, Spinner, StatusBadge, api, formatDate, useLoader } from "@/components/ui";
-
-type CampaignRow = {
-  id: string;
-  name: string;
-  subject: string;
-  status: string;
-  createdAt: string;
-  startedAt: string | null;
-  completedAt: string | null;
-  totalRecipients: number;
-  queued: number;
-  sending: number;
-  sent: number;
-  failed: number;
-  uniqueOpens: number;
-};
+import { useCallback, useState } from "react";
+import { Alert, EmptyState, Spinner, api, useLoader } from "@/components/ui";
+import CancelScheduledDialog from "@/components/CancelScheduledDialog";
+import RescheduleDialog from "@/components/RescheduleDialog";
+import { useT } from "@/i18n/client";
+import { intlTag } from "@/i18n/locale";
+import { formatScheduledTime } from "@/lib/scheduling";
+import CampaignsTable, { type CampaignRow } from "./CampaignsTable";
 
 export default function CampaignsClient() {
+  const { t, locale } = useT();
   const router = useRouter();
   const fetchCampaigns = useCallback(async () => {
     const data = await api<{ campaigns: CampaignRow[] }>("/api/campaigns");
     return data.campaigns;
   }, []);
 
-  const { data: rows, error, setError } = useLoader(fetchCampaigns);
+  const { data: rows, error, setError, setData, reload } = useLoader(fetchCampaigns);
+  const [cancelTarget, setCancelTarget] = useState<CampaignRow | null>(null);
+  const [rescheduleTarget, setRescheduleTarget] = useState<CampaignRow | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const duplicate = async (id: string) => {
     try {
       const result = await api<{ campaign: { id: string } }>(`/api/campaigns/${id}/duplicate`, { method: "POST" });
       router.push(`/campaigns/${result.campaign.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Duplicate failed");
+      setError(err instanceof Error ? err.message : t("campaigns.duplicateFailed"));
     }
   };
 
   return (
     <div className="grid gap-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">Campaigns</h1>
-        <Link className="btn btn-primary" href="/campaigns/new">New campaign</Link>
+        <h1 className="text-xl font-semibold">{t("campaigns.title")}</h1>
+        <Link className="btn btn-primary" href="/campaigns/new">{t("campaigns.new")}</Link>
       </div>
 
       {error ? <Alert kind="error">{error}</Alert> : null}
+      {notice ? <Alert kind="success">{notice}</Alert> : null}
 
       {rows === null ? (
         <Spinner />
       ) : rows.length === 0 ? (
-        <EmptyState title="No campaigns yet">Create one to start sending.</EmptyState>
+        <EmptyState title={t("campaigns.empty.title")}>{t("campaigns.empty.hint")}</EmptyState>
       ) : (
-        <div className="card overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left" style={{ color: "var(--color-muted)" }}>
-                <th className="px-3 py-2 font-medium">Campaign</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 text-right font-medium">Recipients</th>
-                <th className="px-3 py-2 text-right font-medium">Queued</th>
-                <th className="px-3 py-2 text-right font-medium">Sent</th>
-                <th className="px-3 py-2 text-right font-medium">Failed</th>
-                <th className="px-3 py-2 text-right font-medium">Opens</th>
-                <th className="hidden px-3 py-2 font-medium lg:table-cell">Created</th>
-                <th className="hidden px-3 py-2 font-medium lg:table-cell">Completed</th>
-                <th className="px-3 py-2" />
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => {
-                const openRate = row.sent > 0 ? (row.uniqueOpens / row.sent) * 100 : 0;
-                return (
-                  <tr key={row.id} className="border-b last:border-0">
-                    <td className="px-3 py-2">
-                      <Link href={`/campaigns/${row.id}`} className="font-medium hover:underline">{row.name}</Link>
-                      <p className="hint line-clamp-1">{row.subject || "No subject"}</p>
-                    </td>
-                    <td className="px-3 py-2"><StatusBadge status={row.status} /></td>
-                    <td className="px-3 py-2 text-right tabular-nums">{row.totalRecipients}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{row.queued + row.sending}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{row.sent}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{row.failed}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {row.uniqueOpens}
-                      <span className="hint"> ({openRate.toFixed(0)}%)</span>
-                    </td>
-                    <td className="hidden px-3 py-2 lg:table-cell" style={{ color: "var(--color-muted)" }}>
-                      {formatDate(row.createdAt)}
-                    </td>
-                    <td className="hidden px-3 py-2 lg:table-cell" style={{ color: "var(--color-muted)" }}>
-                      {formatDate(row.completedAt)}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      <button className="btn px-2 py-1 text-xs" onClick={() => duplicate(row.id)}>Duplicate</button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <CampaignsTable
+          rows={rows}
+          onDuplicate={duplicate}
+          onCancelScheduled={(row) => { setNotice(null); setCancelTarget(row); }}
+          onReschedule={(row) => { setNotice(null); setRescheduleTarget(row); }}
+        />
       )}
 
-      <p className="hint">
-        Open counts are approximate: some clients block tracking images, while security scanners can load
-        them automatically. Treat them as a signal, not proof that a person read the email.
-      </p>
+      {rescheduleTarget ? (
+        <RescheduleDialog
+          campaign={rescheduleTarget}
+          onClose={() => setRescheduleTarget(null)}
+          onStale={reload}
+          onRescheduled={({ id, name, scheduledAt }) => {
+            setRescheduleTarget(null);
+            setNotice(t("reschedule.notice", {
+              name, when: formatScheduledTime(scheduledAt, { locale: intlTag(locale) }) ?? "",
+            }));
+            // Show the new time at once; the reload brings whatever else changed meanwhile.
+            setData((current) => current && current.map((row) => (row.id === id ? { ...row, scheduledAt } : row)));
+            reload();
+          }}
+        />
+      ) : null}
+
+      {cancelTarget ? (
+        <CancelScheduledDialog
+          campaign={cancelTarget}
+          onClose={() => setCancelTarget(null)}
+          onStale={reload}
+          onCancelled={({ name, alreadyCancelled }) => {
+            setCancelTarget(null);
+            setNotice(t(alreadyCancelled ? "campaigns.alreadyCancelledNotice" : "campaigns.cancelledNotice", { name }));
+            reload();
+          }}
+        />
+      ) : null}
+
+      <p className="hint">{t("campaigns.opensNote")}</p>
     </div>
   );
 }

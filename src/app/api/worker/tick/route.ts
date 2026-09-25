@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
-import { safeEqual } from "@/lib/crypto";
-import { runTick } from "@/lib/worker";
+import { isPlaceholderSecret, safeEqual } from "@/lib/crypto";
+import { runSchedulerCycle, safeErrorMessage } from "@/lib/scheduler";
 
 /**
  * Queue processor. Drive it with a cron job, an external scheduler, or the
@@ -16,7 +16,7 @@ export const maxDuration = 60;
 
 async function authorize(): Promise<boolean> {
   const secret = process.env.WORKER_SECRET ?? process.env.CRON_SECRET;
-  if (!secret) return false;
+  if (!secret || isPlaceholderSecret(secret)) return false;
 
   const h = await headers();
   const bearer = h.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
@@ -30,14 +30,15 @@ async function tick() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   try {
-    const result = await runTick();
-    return NextResponse.json(result);
+    const outcome = await runSchedulerCycle("worker");
+    // Only ever answered in a test environment, by the test panel's own rules: the test
+    // scheduler is stopped, or a cycle is already running. Not an error for the caller.
+    if (!outcome.ran) return NextResponse.json({ ok: true, skipped: outcome.reason });
+    return NextResponse.json(outcome.report.result);
   } catch (error) {
     console.error("[worker] tick failed", error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Worker failed" },
-      { status: 500 },
-    );
+    // The caller holds the worker secret, so it is told why; connection strings and passwords are removed first.
+    return NextResponse.json({ error: safeErrorMessage(error) }, { status: 500 });
   }
 }
 

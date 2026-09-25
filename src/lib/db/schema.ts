@@ -2,6 +2,7 @@ import { relations, sql } from "drizzle-orm";
 import {
   bigserial,
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -20,6 +21,7 @@ export const smtpSecurityEnum = pgEnum("smtp_security", ["none", "starttls", "tl
 
 export const campaignStatusEnum = pgEnum("campaign_status", [
   "DRAFT",
+  "SCHEDULED",
   "QUEUED",
   "SENDING",
   "PAUSED",
@@ -158,11 +160,16 @@ export const campaigns = pgTable("campaigns", {
   totalRecipients: integer("total_recipients").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  /** UTC instant a SCHEDULED campaign is due to send. NULL for immediate sends. */
+  scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
   startedAt: timestamp("started_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),
 }, (t) => [
   index("campaigns_status_idx").on(t.status),
   index("campaigns_created_at_idx").on(t.createdAt),
+  // Compared as text: Postgres refuses to use an enum value in the same
+  // transaction that added it, and the migration runs in one.
+  check("campaigns_scheduled_requires_time", sql`${t.status}::text <> 'SCHEDULED' OR ${t.scheduledAt} IS NOT NULL`),
 ]);
 
 export const campaignLists = pgTable("campaign_lists", {

@@ -11,9 +11,9 @@ export async function POST(request: Request) {
   return withAuthMutation(async () => {
     const body = await readJson<{ text?: string; listId?: string | null }>(request);
     const text = typeof body.text === "string" ? body.text : "";
-    if (text.length === 0) badRequest("Paste at least one email address");
+    if (text.length === 0) badRequest("err.import.pasteEmpty");
     if (Buffer.byteLength(text, "utf8") > MAX_PASTE_BYTES) {
-      badRequest("That is too much text to paste at once — upload it as a file instead");
+      badRequest("err.import.pasteTooLong");
     }
 
     const { valid, invalid } = parseAddressBlob(text);

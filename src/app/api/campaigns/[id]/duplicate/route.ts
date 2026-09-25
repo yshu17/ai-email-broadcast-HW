@@ -12,7 +12,7 @@ export async function POST(_request: Request, ctx: Ctx) {
     const { id } = await ctx.params;
     const rows = await db.select().from(campaigns).where(eq(campaigns.id, id)).limit(1);
     const source = rows[0];
-    if (!source) notFound("Campaign not found");
+    if (!source) notFound("err.campaign.notFound");
 
     const [copy] = await db
       .insert(campaigns)

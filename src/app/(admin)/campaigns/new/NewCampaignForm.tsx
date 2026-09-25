@@ -3,8 +3,10 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Alert, api } from "@/components/ui";
+import { useT } from "@/i18n/client";
 
 export default function NewCampaignForm() {
+  const { t } = useT();
   const router = useRouter();
   const [name, setName] = useState("");
   const [subject, setSubject] = useState("");
@@ -22,7 +24,7 @@ export default function NewCampaignForm() {
       });
       router.push(`/campaigns/${result.campaign.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create the campaign");
+      setError(err instanceof Error ? err.message : t("campaignNew.failed"));
       setBusy(false);
     }
   };
@@ -31,19 +33,19 @@ export default function NewCampaignForm() {
     <form onSubmit={submit} className="card grid gap-3 p-4">
       {error ? <Alert kind="error">{error}</Alert> : null}
       <div>
-        <label className="label" htmlFor="name">Internal name</label>
+        <label className="label" htmlFor="name">{t("campaignNew.name")}</label>
         <input id="name" className="input" required autoFocus value={name}
-          onChange={(e) => setName(e.target.value)} placeholder="October newsletter" />
-        <p className="hint mt-1">Only you see this.</p>
+          onChange={(e) => setName(e.target.value)} placeholder={t("campaignNew.namePlaceholder")} />
+        <p className="hint mt-1">{t("campaignNew.nameHint")}</p>
       </div>
       <div>
-        <label className="label" htmlFor="subject">Email subject</label>
+        <label className="label" htmlFor="subject">{t("campaignNew.subject")}</label>
         <input id="subject" className="input" value={subject}
-          onChange={(e) => setSubject(e.target.value)} placeholder="What's new this month" />
-        <p className="hint mt-1">You can change this in the next step.</p>
+          onChange={(e) => setSubject(e.target.value)} placeholder={t("campaignNew.subjectPlaceholder")} />
+        <p className="hint mt-1">{t("campaignNew.subjectHint")}</p>
       </div>
       <button className="btn btn-primary" type="submit" disabled={busy}>
-        {busy ? "Creating…" : "Create draft"}
+        {busy ? t("campaignNew.creating") : t("campaignNew.create")}
       </button>
     </form>
   );

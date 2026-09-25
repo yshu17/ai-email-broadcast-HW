@@ -2,6 +2,9 @@
 
 import { useState } from "react";
 import { Alert, api } from "@/components/ui";
+import { useT } from "@/i18n/client";
+import { Rich } from "@/i18n/rich";
+import type { MessageKey } from "@/i18n/translate";
 import type { ColumnRole } from "@/lib/csv";
 
 type Summary = {
@@ -23,15 +26,11 @@ type PreviewResponse = {
   content: string;
 };
 
-const ROLE_LABELS: Record<ColumnRole, string> = {
-  email: "Email",
-  firstName: "First Name",
-  lastName: "Last Name",
-  ignore: "Ignore",
-};
+const ROLES: ColumnRole[] = ["email", "firstName", "lastName", "ignore"];
 
 /** Paste box + CSV/TXT upload wizard for one list. */
 export default function ImportPanel({ listId, onImported }: { listId: string; onImported: () => void }) {
+  const { t } = useT();
   const [tab, setTab] = useState<"paste" | "file">("paste");
   const [summary, setSummary] = useState<Summary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -41,11 +40,11 @@ export default function ImportPanel({ listId, onImported }: { listId: string; on
       <div className="flex gap-1">
         <button className={`btn px-3 py-1.5 text-xs ${tab === "paste" ? "btn-active" : ""}`}
           onClick={() => { setTab("paste"); setSummary(null); setError(null); }}>
-          Paste addresses
+          {t("import.tab.paste")}
         </button>
         <button className={`btn px-3 py-1.5 text-xs ${tab === "file" ? "btn-active" : ""}`}
           onClick={() => { setTab("file"); setSummary(null); setError(null); }}>
-          Upload CSV / TXT
+          {t("import.tab.file")}
         </button>
       </div>
 
@@ -62,18 +61,21 @@ export default function ImportPanel({ listId, onImported }: { listId: string; on
 }
 
 function ImportSummaryView({ summary }: { summary: Summary }) {
+  const { t, formatNumber } = useT();
   return (
     <Alert kind={summary.imported > 0 ? "success" : "info"}>
       <div className="grid gap-1">
         <p>
-          <strong>{summary.imported}</strong> imported ·{" "}
-          <strong>{summary.duplicates}</strong> duplicate{summary.duplicates === 1 ? "" : "s"} ·{" "}
-          <strong>{summary.invalid}</strong> invalid ·{" "}
-          <strong>{summary.skippedSuppressed}</strong> skipped (unsubscribed)
+          <Rich text={t("import.summary", {
+            imported: formatNumber(summary.imported),
+            duplicates: formatNumber(summary.duplicates),
+            invalid: formatNumber(summary.invalid),
+            skipped: formatNumber(summary.skippedSuppressed),
+          })} />
         </p>
         {summary.invalidSamples.length > 0 ? (
           <p className="text-xs opacity-80">
-            Rejected, for example: {summary.invalidSamples.slice(0, 5).join(", ")}
+            {t("import.rejected", { samples: summary.invalidSamples.slice(0, 5).join(", ") })}
           </p>
         ) : null}
       </div>
@@ -86,6 +88,7 @@ function ImportSummaryView({ summary }: { summary: Summary }) {
 function PasteImport({
   listId, onDone, onError,
 }: { listId: string; onDone: (s: Summary) => void; onError: (e: string) => void }) {
+  const { t } = useT();
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -99,7 +102,7 @@ function PasteImport({
       onDone(result.summary);
       setText("");
     } catch (err) {
-      onError(err instanceof Error ? err.message : "Import failed");
+      onError(err instanceof Error ? err.message : t("import.failed"));
     } finally {
       setBusy(false);
     }
@@ -107,7 +110,7 @@ function PasteImport({
 
   return (
     <div className="grid gap-2">
-      <label className="label" htmlFor="pasteBox">Paste email addresses</label>
+      <label className="label" htmlFor="pasteBox">{t("import.paste.label")}</label>
       <textarea
         id="pasteBox"
         className="input font-mono text-xs"
@@ -116,12 +119,10 @@ function PasteImport({
         value={text}
         onChange={(e) => setText(e.target.value)}
       />
-      <p className="hint">
-        Separate with new lines, commas, semicolons or spaces. `Name &lt;addr@example.com&gt;` is understood too.
-      </p>
+      <p className="hint">{t("import.paste.hint", { example: "`Name <addr@example.com>`" })}</p>
       <div>
         <button className="btn btn-primary" disabled={busy || text.trim().length === 0} onClick={submit}>
-          {busy ? "Importing…" : "Import addresses"}
+          {busy ? t("import.importing") : t("import.paste.button")}
         </button>
       </div>
     </div>
@@ -133,6 +134,7 @@ function PasteImport({
 function FileImport({
   listId, onDone, onError,
 }: { listId: string; onDone: (s: Summary) => void; onError: (e: string) => void }) {
+  const { t } = useT();
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [mapping, setMapping] = useState<ColumnRole[]>([]);
   const [hasHeader, setHasHeader] = useState(true);
@@ -152,7 +154,7 @@ function FileImport({
       setMapping(result.mapping);
       setHasHeader(result.hasHeader);
     } catch (err) {
-      onError(err instanceof Error ? err.message : "Could not read that file");
+      onError(err instanceof Error ? err.message : t("import.file.readFailed"));
     } finally {
       setBusy(false);
     }
@@ -176,7 +178,7 @@ function FileImport({
       onDone(result.summary);
       setPreview(null);
     } catch (err) {
-      onError(err instanceof Error ? err.message : "Import failed");
+      onError(err instanceof Error ? err.message : t("import.failed"));
     } finally {
       setBusy(false);
     }
@@ -194,43 +196,48 @@ function FileImport({
     });
 
   const emailMapped = isPlain || mapping.includes("email");
-  const delimiterLabel = preview?.delimiter === "\t" ? "Tab" : preview?.delimiter === ";" ? "Semicolon" : "Comma";
+  const delimiterKey: MessageKey =
+    preview?.delimiter === "\t" ? "import.file.delimiter.tab"
+      : preview?.delimiter === ";" ? "import.file.delimiter.semicolon"
+        : "import.file.delimiter.comma";
 
   return (
     <div className="grid gap-3">
       <div>
-        <label className="label" htmlFor="fileInput">Step 1 — choose a .csv or .txt file</label>
+        <label className="label" htmlFor="fileInput">{t("import.file.step1")}</label>
         <input id="fileInput" className="input" type="file" accept=".csv,.txt,text/csv,text/plain"
           disabled={busy}
           onChange={(e) => {
             const file = e.target.files?.[0];
             if (file) void upload(file);
           }} />
-        <p className="hint mt-1">UTF-8 is assumed. Maximum 10 MB.</p>
+        <p className="hint mt-1">{t("import.file.hint")}</p>
       </div>
 
-      {busy && !preview ? <p className="hint">Reading file…</p> : null}
+      {busy && !preview ? <p className="hint">{t("import.file.reading")}</p> : null}
 
       {preview ? (
         <>
           <div className="card p-3 text-sm">
-            <p className="font-medium">Step 2 — detected format</p>
+            <p className="font-medium">{t("import.file.step2")}</p>
             <p className="hint mt-1">
-              Delimiter: <strong>{delimiterLabel}</strong> · {preview.totalRows} data row
-              {preview.totalRows === 1 ? "" : "s"}
-              {isPlain ? " · treating this as a plain address list" : ""}
+              <Rich text={t("import.file.detected", {
+                delimiter: t(delimiterKey),
+                rows: t("import.file.dataRows", { count: preview.totalRows }),
+              })} />
+              {isPlain ? t("import.file.plainNote") : ""}
             </p>
             {!isPlain ? (
               <label className="mt-2 flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={hasHeader} onChange={(e) => setHasHeader(e.target.checked)} />
-                First row is a header
+                {t("import.file.firstRowHeader")}
               </label>
             ) : null}
           </div>
 
           {!isPlain ? (
             <div className="card overflow-x-auto p-3">
-              <p className="mb-2 text-sm font-medium">Step 3 &amp; 4 — preview and column mapping</p>
+              <p className="mb-2 text-sm font-medium">{t("import.file.step34")}</p>
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b text-left">
@@ -241,10 +248,10 @@ function FileImport({
                           className="input mt-1 px-1 py-0.5 text-xs"
                           value={mapping[index] ?? "ignore"}
                           onChange={(e) => setRole(index, e.target.value as ColumnRole)}
-                          aria-label={`Map column ${label}`}
+                          aria-label={t("import.file.mapColumn", { label })}
                         >
-                          {(Object.keys(ROLE_LABELS) as ColumnRole[]).map((role) => (
-                            <option key={role} value={role}>{ROLE_LABELS[role]}</option>
+                          {ROLES.map((role) => (
+                            <option key={role} value={role}>{t(`import.role.${role}` as MessageKey)}</option>
                           ))}
                         </select>
                       </th>
@@ -265,18 +272,16 @@ function FileImport({
                 </tbody>
               </table>
               {!emailMapped ? (
-                <p className="mt-2 text-xs text-red-600 dark:text-red-400">
-                  Map one column to Email — it is required.
-                </p>
+                <p className="mt-2 text-xs text-red-600 dark:text-red-400">{t("import.file.emailRequired")}</p>
               ) : null}
             </div>
           ) : null}
 
           <div className="flex gap-2">
             <button className="btn btn-primary" disabled={busy || !emailMapped} onClick={confirm}>
-              {busy ? "Importing…" : `Import ${preview.totalRows} row${preview.totalRows === 1 ? "" : "s"}`}
+              {busy ? t("import.importing") : t("import.file.importRows", { count: preview.totalRows })}
             </button>
-            <button className="btn" onClick={() => setPreview(null)} disabled={busy}>Cancel</button>
+            <button className="btn" onClick={() => setPreview(null)} disabled={busy}>{t("common.cancel")}</button>
           </div>
         </>
       ) : null}

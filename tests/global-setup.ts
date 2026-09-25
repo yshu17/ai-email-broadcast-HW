@@ -11,7 +11,12 @@ import "./env";
  */
 export default async function setup() {
   await ensureTestDatabase();
-  execFileSync("npx", ["tsx", "scripts/migrate.ts"], { stdio: "inherit", env: { ...process.env } });
+  const npx = process.platform === "win32" ? "npx.cmd" : "npx";
+  execFileSync(npx, ["tsx", "scripts/migrate.ts"], {
+    stdio: "inherit",
+    env: { ...process.env },
+    shell: process.platform === "win32",
+  });
 }
 
 /** Creates the test database if it does not exist, so a fresh clone just works. */

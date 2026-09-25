@@ -300,6 +300,32 @@ describe("finalizeCompletedCampaigns", () => {
     expect((await getCampaign(campaignId)).status).toBe("PAUSED");
   });
 
+  it("completes a QUEUED campaign whose whole queue ended without a single claim", async () => {
+    // For example every recipient unsubscribed after the campaign was queued and before the first tick.
+    const campaignId = await createCampaign({ status: "QUEUED" });
+    await addRecipient(campaignId, "a@x.com", { deliveryStatus: "SUPPRESSED" });
+    await addRecipient(campaignId, "b@x.com", { deliveryStatus: "SUPPRESSED" });
+
+    expect(await finalizeCompletedCampaigns()).toBe(1);
+    expect((await getCampaign(campaignId)).status).toBe("COMPLETED");
+  });
+
+  it("leaves a QUEUED campaign that still has queued mail alone", async () => {
+    const campaignId = await createCampaign({ status: "QUEUED" });
+    await addRecipient(campaignId, "a@x.com", { deliveryStatus: "SUPPRESSED" });
+    await addRecipient(campaignId, "b@x.com", { deliveryStatus: "QUEUED" });
+
+    expect(await finalizeCompletedCampaigns()).toBe(0);
+    expect((await getCampaign(campaignId)).status).toBe("QUEUED");
+  });
+
+  it("never completes a QUEUED campaign that has no queue at all: it has sent nothing, so it is not done", async () => {
+    const campaignId = await createCampaign({ status: "QUEUED" });
+
+    expect(await finalizeCompletedCampaigns()).toBe(0);
+    expect((await getCampaign(campaignId)).status).toBe("QUEUED");
+  });
+
   it("is idempotent when two workers finish at the same moment", async () => {
     const campaignId = await createCampaign({ status: "SENDING" });
     await addRecipient(campaignId, "a@x.com", { deliveryStatus: "SENT" });

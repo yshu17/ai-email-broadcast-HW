@@ -16,7 +16,7 @@ export async function POST(_request: Request, ctx: Ctx) {
       .where(and(eq(campaigns.id, id), eq(campaigns.status, "PAUSED")))
       .returning({ id: campaigns.id });
 
-    if (rows.length === 0) conflict("Only a paused campaign can be resumed");
+    if (rows.length === 0) conflict("err.campaign.resumeState");
     return NextResponse.json({ ok: true });
   });
 }

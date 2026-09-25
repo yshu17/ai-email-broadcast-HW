@@ -21,7 +21,7 @@ export async function POST(_request: Request, ctx: Ctx) {
       .where(and(eq(campaigns.id, id), inArray(campaigns.status, ["QUEUED", "SENDING", "PAUSED"])))
       .returning({ id: campaigns.id });
 
-    if (rows.length === 0) conflict("Only a queued, sending or paused campaign can be cancelled");
+    if (rows.length === 0) conflict("err.campaign.cancelState");
 
     const cancelled = await sql<{ id: string }[]>`
       UPDATE campaign_recipients
