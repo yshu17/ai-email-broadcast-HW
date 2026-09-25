@@ -77,9 +77,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The gitleaks CLI over the whole history. (gitleaks-action scans "<first pushed commit>^..HEAD", which
+      # fails on the first push of a new repository, whose first commit has no parent.)
+      - name: Scan the repository history with gitleaks
+        run: >-
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.24.3
+          git /repo --redact --no-banner --exit-code 1
 
   docker:
     name: Docker image
