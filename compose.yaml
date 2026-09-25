@@ -1,0 +1,124 @@
+# Local development and self-hosting.
+#
+#   docker compose up -d db                        only Postgres, for `npm run dev` on your machine
+#   docker compose --profile app up --build -d     the whole application: migrate, web, worker
+#   docker compose --profile app --profile smtp-test up --build -d
+#                                                  ...plus a local mail catcher (nothing is delivered)
+#
+# Secrets come from your shell or a `.env` file next to this one (copy `.env.example`); nothing secret is
+# written here. `ENCRYPTION_KEY` and `WORKER_SECRET` are required for the application and have no defaults.
+
+x-application: &application
+  build: .
+  image: ${MAILER_IMAGE:-mailer:local}
+  restart: unless-stopped
+  environment: &application-environment
+    DATABASE_URL: postgres://mailer:${POSTGRES_PASSWORD:-mailer}@db:5432/mailer
+    APP_URL: ${APP_URL:-http://localhost:3000}
+    ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env (openssl rand -hex 32)}
+    WORKER_SECRET: ${WORKER_SECRET:?set WORKER_SECRET in .env (openssl rand -hex 32)}
+    SMTP_MAX_EMAILS_PER_HOUR: ${SMTP_MAX_EMAILS_PER_HOUR:-5000}
+    # Optional: mail server settings from the environment instead of the Settings page. Empty means "not set".
+    SMTP_HOST: ${SMTP_HOST:-}
+    SMTP_PORT: ${SMTP_PORT:-}
+    SMTP_SECURITY: ${SMTP_SECURITY:-}
+    SMTP_USER: ${SMTP_USER:-}
+    SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+    SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+    SMTP_FROM_NAME: ${SMTP_FROM_NAME:-}
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  profiles: ["app"]
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mailer
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mailer}
+      POSTGRES_DB: mailer
+    # Published on this machine only, for `npm run dev` and `npm test`. The application containers reach it
+    # over the compose network and need no published port. Change the password (POSTGRES_PASSWORD) for anything
+    # that is not a laptop.
+    ports:
+      - "127.0.0.1:${DB_PORT:-5435}:5432"
+    volumes:
+      - mailer-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mailer -d mailer"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Applies the database migrations once, then exits. web and worker wait for it to finish, so no
+  # two containers ever migrate at the same time. Run it again by hand after an upgrade:
+  #   docker compose --profile app run --rm migrate
+  migrate:
+    <<: *application
+    restart: "no"
+    command: ["node", "dist-scripts/migrate.cjs"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    <<: *application
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # The image's own HEALTHCHECK asks /api/health, which needs the database.
+    stop_grace_period: 30s
+
+  # The ticker: every WORKER_TICK_INTERVAL_SECONDS it calls the web server's worker endpoint, which starts
+  # scheduled campaigns whose time has come and sends what the rate limit allows. It keeps no state (every
+  # schedule and the queue live in Postgres), so it can be stopped and started at any moment.
+  worker:
+    <<: *application
+    command: ["node", "dist-scripts/worker-loop.cjs"]
+    environment:
+      <<: *application-environment
+      WORKER_TARGET_URL: http://web:3000
+      WORKER_TICK_INTERVAL_SECONDS: ${WORKER_TICK_INTERVAL_SECONDS:-60}
+      WORKER_HEARTBEAT_FILE: /tmp/worker.heartbeat
+    depends_on:
+      web:
+        condition: service_healthy
+    tmpfs:
+      - /tmp
+    stop_grace_period: 90s
+    healthcheck:
+      # Healthy while the ticker has had an answer from the web server within three intervals (and a minute).
+      test:
+        - CMD
+        - node
+        - -e
+        - "const s=require('fs').statSync('/tmp/worker.heartbeat');const max=(Number(process.env.WORKER_TICK_INTERVAL_SECONDS||60)*3+60)*1000;process.exit(Date.now()-s.mtimeMs<max?0:1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+  # A mail server that keeps what it is sent instead of delivering it. Point the application at it in
+  # Settings (host `mailpit`, port 1025, security none), or set SMTP_HOST=mailpit SMTP_PORT=1025
+  # SMTP_SECURITY=none SMTP_FROM_EMAIL=sender@example.test. Read the mail at http://localhost:8025.
+  mailpit:
+    image: axllent/mailpit:v1.27
+    profiles: ["smtp-test"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mailer-db:

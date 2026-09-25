@@ -1,13 +1,54 @@
-node_modules
-.next
-dist-scripts
+# What must never reach the image or the build context: history, secrets, dependencies that the
+# build installs itself, build output, local data and editor files.
+
+# Version control and CI
 .git
+.gitignore
+.gitattributes
+.github
+
+# Secrets and local configuration (only the example is allowed through)
 .env
 .env.*
 !.env.example
-npm-debug.log*
+*.pem
+*.key
+.claude
+
+# Dependencies and build output are recreated inside the image
+node_modules
+.next
+out
+dist-scripts
+*.tsbuildinfo
+next-env.d.ts
+
+# Test output, test mail and local databases
 coverage
 tests
+received-emails
+*.eml
+*.sqlite
+*.sqlite3
+*.db
+
+# Logs, caches and temporary files
+logs
+*.log
+npm-debug.log*
+.cache
+tmp
+.tmp
+
+# Documentation and editor files
+docs
 *.md
-!README.md
-.claude
+.idea
+.vscode
+.DS_Store
+
+# Container files themselves
+Dockerfile
+compose.yaml
+docker-compose*.yml
+.dockerignore

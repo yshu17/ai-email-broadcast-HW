@@ -1,15 +1,45 @@
+# Dependencies and build output
 node_modules
 .next
 out
-.env
-.env.local
+dist-scripts
 *.tsbuildinfo
 next-env.d.ts
+
+# Environment and secrets: only .env.example is kept in Git
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Test and coverage output
 coverage
-dist-scripts
+.nyc_output
+test-results
+
+# Logs and temporary files
+logs
+*.log
+npm-debug.log*
+*.tmp
+.tmp
+
+# Local databases and Docker volumes
+*.sqlite
+*.sqlite3
+*.db
+/.docker-data/
+
+# Local test emails (.eml) captured by the dev SMTP sink and the developer test panel
+/received-emails/
+*.eml
+
+# Editors and operating systems
+.idea
+.vscode
+.DS_Store
+Thumbs.db
 
 # Local Claude Code settings
 .claude/settings.local.json
-
-# macOS
-.DS_Store
